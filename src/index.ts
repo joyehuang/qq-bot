@@ -34,10 +34,12 @@ interface Message {
 const BOT_INFO = {
   name: '打卡小助手',
   version: '1.0.0',
-  abilities: [
-    '打卡记录 - 帮你记录学习、运动等活动时长',
-    '打卡统计 - 查看你的打卡历史和累计时间',
-    '更多功能开发中...'
+  description: '一个帮助大家记录和追踪学习、运动等活动的群打卡机器人',
+  commands: [
+    '📝 打卡 [时长] [内容] - 记录打卡',
+    '📊 打卡记录 - 查看统计',
+    '💡 建议 [内容] - 提交功能建议',
+    '❓ 帮助 - 查看所有命令'
   ]
 };
 
@@ -67,8 +69,9 @@ function handleIntroduction(ws: WebSocket, event: Message, message: string): boo
     sendReply(
       ws,
       event,
-      `🤖 你好！我是 ${BOT_INFO.name}\n\n` +
-      `我是一个群打卡机器人，专门帮助大家记录和追踪学习、运动等活动。\n\n` +
+      `🤖 你好！我是 ${BOT_INFO.name} v${BOT_INFO.version}\n\n` +
+      `${BOT_INFO.description}\n\n` +
+      `🎯 主要功能:\n${BOT_INFO.commands.join('\n')}\n\n` +
       `发送"帮助"查看详细使用方法～`
     );
     return true;
@@ -76,12 +79,13 @@ function handleIntroduction(ws: WebSocket, event: Message, message: string): boo
 
   // 检查能力询问
   if (matchPattern(message, INTRO_PATTERNS.ability)) {
-    let abilitiesText = BOT_INFO.abilities.map((a, i) => `${i + 1}. ${a}`).join('\n');
     sendReply(
       ws,
       event,
-      `🎯 我的功能:\n\n${abilitiesText}\n\n` +
-      `发送"帮助"查看具体命令格式～`
+      `🎯 我可以帮你:\n\n${BOT_INFO.commands.join('\n')}\n\n` +
+      `⏱️ 支持多种时长格式:\n` +
+      `30分钟、1小时、1h30m、1天、3600秒 等\n\n` +
+      `发送"帮助"查看完整命令列表～`
     );
     return true;
   }
