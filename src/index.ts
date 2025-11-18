@@ -130,10 +130,11 @@ interface Message {
 // 机器人信息
 const BOT_INFO = {
   name: '打卡小助手',
-  version: '1.0.0',
+  version: '1.1.0',
   description: '一个帮助大家记录和追踪学习、运动等活动的群打卡机器人',
   commands: [
     '📝 打卡 [时长] [内容] - 记录打卡',
+    '💸 打卡 贷款 [时长] [内容] - 贷款打卡',
     '📊 打卡记录 - 查看统计',
     '💡 建议 [内容] - 提交功能建议',
     '❓ 帮助 - 查看所有命令'
@@ -243,6 +244,43 @@ function parseDuration(durationStr: string): number | null {
   return null;
 }
 
+// 格式化时长显示
+function formatDuration(minutes: number): string {
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (hours > 0) {
+    return mins > 0 ? `${hours}小时${mins}分钟` : `${hours}小时`;
+  }
+  return `${mins}分钟`;
+}
+
+// 计算用户当前贷款总额
+async function getUserDebt(userId: number): Promise<number> {
+  // 获取所有贷款打卡的总时长
+  const loanStats = await prisma.checkin.aggregate({
+    where: {
+      userId,
+      isLoan: true
+    },
+    _sum: { duration: true }
+  });
+
+  // 获取所有正常打卡的总时长
+  const normalStats = await prisma.checkin.aggregate({
+    where: {
+      userId,
+      isLoan: false
+    },
+    _sum: { duration: true }
+  });
+
+  const totalLoan = loanStats._sum.duration || 0;
+  const totalNormal = normalStats._sum.duration || 0;
+
+  // 负债 = 贷款总额 - 正常打卡总额（最小为0）
+  return Math.max(0, totalLoan - totalNormal);
+}
+
 // 处理打卡命令
 async function handleCheckin(
   ws: WebSocket,
@@ -255,12 +293,20 @@ async function handleCheckin(
 
   // 检查参数
   if (args.length < 2) {
-    sendReply(ws, event, '格式错误！请使用: @机器人 打卡 [时长] [内容]\n例如: @机器人 打卡 30分钟 学习TypeScript');
+    sendReply(ws, event, '格式错误！请使用: @机器人 打卡 [时长] [内容]\n例如: @机器人 打卡 30分钟 学习TypeScript\n\n💸 贷款打卡: @机器人 打卡 贷款 [时长] [内容]');
     return;
   }
 
-  const durationStr = args[0];
-  const content = args.slice(1).join(' ');
+  // 检查是否是贷款打卡
+  const isLoan = args[0] === '贷款';
+  const durationStr = isLoan ? args[1] : args[0];
+  const content = isLoan ? args.slice(2).join(' ') : args.slice(1).join(' ');
+
+  // 贷款打卡需要至少3个参数
+  if (isLoan && args.length < 3) {
+    sendReply(ws, event, '贷款打卡格式: @机器人 打卡 贷款 [时长] [内容]\n例如: @机器人 打卡 贷款 1小时 学习');
+    return;
+  }
 
   const duration = parseDuration(durationStr);
   if (!duration || duration <= 0) {
@@ -289,45 +335,95 @@ async function handleCheckin(
       });
     }
 
+    // 获取打卡前的负债
+    const debtBefore = await getUserDebt(user.id);
+
     // 创建打卡记录
-    const checkin = await prisma.checkin.create({
+    await prisma.checkin.create({
       data: {
         userId: user.id,
         groupId,
         duration,
-        content
+        content,
+        isLoan
       }
     });
 
-    // 获取今日打卡统计
+    // 获取打卡后的负债
+    const debtAfter = await getUserDebt(user.id);
+
+    // 获取今日打卡统计（只统计正常打卡）
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
     const todayStats = await prisma.checkin.aggregate({
       where: {
         userId: user.id,
-        createdAt: { gte: today }
+        createdAt: { gte: today },
+        isLoan: false
       },
       _sum: { duration: true },
       _count: true
     });
 
-    const totalMinutes = todayStats._sum.duration || 0;
-    const hours = Math.floor(totalMinutes / 60);
-    const minutes = totalMinutes % 60;
+    const todayMinutes = todayStats._sum.duration || 0;
 
-    const timeStr = hours > 0
-      ? `${hours}小时${minutes > 0 ? minutes + '分钟' : ''}`
-      : `${minutes}分钟`;
+    if (isLoan) {
+      // 贷款打卡的回复
+      const loanMessages = [
+        '记得要按时还款哦！别当老赖～ 😏',
+        '贷款一时爽，还款火葬场！💀',
+        '又在透支未来了？小心打卡破产！😱',
+        '贷款打卡+1，你的信用额度还够吗？🏦',
+        '先欠着吧，但利息可不低哦～ 📈'
+      ];
 
-    sendReply(
-      ws,
-      event,
-      `✅ 打卡成功！\n` +
-      `📝 内容: ${content}\n` +
-      `⏱️ 时长: ${duration}分钟\n` +
-      `📊 今日累计: ${timeStr} (${todayStats._count}次)`
-    );
+      // 如果连续贷款（之前就有负债），用更调侃的消息
+      const isConsecutiveLoan = debtBefore > 0;
+      const consecutiveMessages = [
+        '又在贷款了？这是要成为打卡界的老赖吗！😤',
+        '连续贷款警告⚠️ 再这样下去要上打卡征信黑名单了！',
+        '负债累累还在贷？你这是要打卡破产啊！💸',
+        '贷款狂魔！你的打卡信用卡都要刷爆了！🔥',
+        '欠债不还，天理不容！快去正常打卡还债！⚡'
+      ];
+
+      const messagePool = isConsecutiveLoan ? consecutiveMessages : loanMessages;
+      const randomMsg = messagePool[Math.floor(Math.random() * messagePool.length)];
+
+      sendReply(
+        ws,
+        event,
+        `💸 贷款打卡成功！\n` +
+        `📝 内容: ${content}\n` +
+        `⏱️ 借款时长: ${formatDuration(duration)}\n` +
+        `📊 当前负债: ${formatDuration(debtAfter)}\n` +
+        `⚠️ ${randomMsg}`
+      );
+    } else {
+      // 正常打卡的回复
+      let replyMsg = `✅ 打卡成功！\n` +
+        `📝 内容: ${content}\n` +
+        `⏱️ 时长: ${formatDuration(duration)}\n`;
+
+      // 如果有还款
+      if (debtBefore > 0) {
+        const repaid = Math.min(duration, debtBefore);
+        replyMsg += `💰 本次还款: ${formatDuration(repaid)}\n`;
+
+        if (debtAfter > 0) {
+          replyMsg += `📊 剩余负债: ${formatDuration(debtAfter)}\n`;
+          replyMsg += `🎯 继续加油，争取早日还清！`;
+        } else {
+          replyMsg += `🎉 恭喜！你已还清所有贷款！\n`;
+          replyMsg += `📊 今日累计: ${formatDuration(todayMinutes)} (${todayStats._count}次)`;
+        }
+      } else {
+        replyMsg += `📊 今日累计: ${formatDuration(todayMinutes)} (${todayStats._count}次)`;
+      }
+
+      sendReply(ws, event, replyMsg);
+    }
 
   } catch (error) {
     console.error('打卡失败:', error);
@@ -352,25 +448,29 @@ async function handleCheckinStats(
       return;
     }
 
-    // 获取总统计
+    // 获取总统计（只统计正常打卡）
     const totalStats = await prisma.checkin.aggregate({
-      where: { userId: user.id },
+      where: { userId: user.id, isLoan: false },
       _sum: { duration: true },
       _count: true
     });
 
-    // 获取今日统计
+    // 获取今日统计（只统计正常打卡）
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
     const todayStats = await prisma.checkin.aggregate({
       where: {
         userId: user.id,
-        createdAt: { gte: today }
+        createdAt: { gte: today },
+        isLoan: false
       },
       _sum: { duration: true },
       _count: true
     });
+
+    // 获取当前负债
+    const currentDebt = await getUserDebt(user.id);
 
     // 获取最近5条记录
     const recentCheckins = await prisma.checkin.findMany({
@@ -380,17 +480,23 @@ async function handleCheckinStats(
     });
 
     const totalMinutes = totalStats._sum.duration || 0;
-    const totalHours = Math.floor(totalMinutes / 60);
     const todayMinutes = todayStats._sum.duration || 0;
 
     let message = `📊 ${user.nickname} 的打卡统计\n\n`;
-    message += `今日: ${todayMinutes}分钟 (${todayStats._count}次)\n`;
-    message += `累计: ${totalHours}小时${totalMinutes % 60}分钟 (${totalStats._count}次)\n\n`;
-    message += `📝 最近记录:\n`;
+    message += `今日: ${formatDuration(todayMinutes)} (${todayStats._count}次)\n`;
+    message += `累计: ${formatDuration(totalMinutes)} (${totalStats._count}次)\n`;
+
+    // 显示负债信息
+    if (currentDebt > 0) {
+      message += `💸 当前负债: ${formatDuration(currentDebt)}\n`;
+    }
+
+    message += `\n📝 最近记录:\n`;
 
     recentCheckins.forEach((c: Checkin, i: number) => {
       const date = c.createdAt.toLocaleDateString('zh-CN');
-      message += `${i + 1}. ${date} - ${c.duration}分钟 - ${c.content}\n`;
+      const loanMark = c.isLoan ? ' 💸' : '';
+      message += `${i + 1}. ${date} - ${c.duration}分钟 - ${c.content}${loanMark}\n`;
     });
 
     sendReply(ws, event, message);
@@ -793,6 +899,9 @@ function connectBot() {
           let helpMsg = '📖 可用命令:\n\n' +
             '打卡 [时长] [内容]\n' +
             '  例: 打卡 30分钟 学习TypeScript\n\n' +
+            '💸 打卡 贷款 [时长] [内容]\n' +
+            '  例: 打卡 贷款 1小时 学习\n' +
+            '  (正常打卡可抵消贷款)\n\n' +
             '打卡记录 - 查看打卡统计\n\n' +
             'github/代码 - 查看今日GitHub提交\n\n' +
             '建议 [内容] - 提交功能建议\n\n' +

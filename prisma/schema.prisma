@@ -30,6 +30,7 @@ model Checkin {
   groupId   String   @map("group_id")
   duration  Int      // 时长（分钟）
   content   String   // 打卡内容
+  isLoan    Boolean  @default(false) @map("is_loan") // 是否是贷款打卡
   createdAt DateTime @default(now()) @map("created_at")
 
   user User @relation(fields: [userId], references: [id])
