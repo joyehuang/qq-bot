@@ -11,8 +11,8 @@ RUN npm ci
 # 复制源代码
 COPY . .
 
-# 生成 Prisma Client
-RUN npx prisma generate
+# 生成 Prisma Client（需要临时设置 DATABASE_URL）
+RUN DATABASE_URL="file:./dev.db" npx prisma generate
 
 # 启动命令
 CMD ["npx", "ts-node", "src/index.ts"]
