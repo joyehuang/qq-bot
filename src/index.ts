@@ -86,15 +86,39 @@ function handleIntroduction(ws: WebSocket, event: Message, message: string): boo
 
 // 解析时长字符串，返回分钟数
 function parseDuration(durationStr: string): number | null {
-  // 支持格式: "30分钟", "1小时", "1.5h", "90m", "30"
-  const hourMatch = durationStr.match(/^([\d.]+)\s*(小时|h|H)$/);
+  // 支持多种格式组合
+  let totalMinutes = 0;
+  let matched = false;
+
+  // 复合格式: "1小时30分钟", "2h30m", "1时30分"
+  const compoundMatch = durationStr.match(/^([\d.]+)\s*(小时|时|h|H)\s*([\d.]+)\s*(分钟|分|m|M)?$/);
+  if (compoundMatch) {
+    totalMinutes = Math.round(parseFloat(compoundMatch[1]) * 60 + parseFloat(compoundMatch[3]));
+    return totalMinutes > 0 ? totalMinutes : null;
+  }
+
+  // 天数: "1天", "2d", "1日"
+  const dayMatch = durationStr.match(/^([\d.]+)\s*(天|日|d|D)$/);
+  if (dayMatch) {
+    return Math.round(parseFloat(dayMatch[1]) * 24 * 60);
+  }
+
+  // 小时: "1小时", "2h", "1.5时", "3hr", "2hrs"
+  const hourMatch = durationStr.match(/^([\d.]+)\s*(小时|时|h|H|hr|hrs|hour|hours)$/i);
   if (hourMatch) {
     return Math.round(parseFloat(hourMatch[1]) * 60);
   }
 
-  const minMatch = durationStr.match(/^([\d.]+)\s*(分钟|m|M)?$/);
+  // 分钟: "30分钟", "45m", "30分", "60min", "90mins"
+  const minMatch = durationStr.match(/^([\d.]+)\s*(分钟|分|m|M|min|mins|minute|minutes)?$/i);
   if (minMatch) {
     return Math.round(parseFloat(minMatch[1]));
+  }
+
+  // 秒数转分钟: "3600秒", "1800s" (向上取整到分钟)
+  const secMatch = durationStr.match(/^([\d.]+)\s*(秒|s|sec|secs|second|seconds)$/i);
+  if (secMatch) {
+    return Math.ceil(parseFloat(secMatch[1]) / 60);
   }
 
   return null;
@@ -121,7 +145,7 @@ async function handleCheckin(
 
   const duration = parseDuration(durationStr);
   if (!duration || duration <= 0) {
-    sendReply(ws, event, '时长格式错误！支持: 30分钟, 1小时, 1.5h, 90m');
+    sendReply(ws, event, '时长格式错误！支持: 30分钟, 1小时, 1h30m, 90m, 1天, 3600秒');
     return;
   }
 
