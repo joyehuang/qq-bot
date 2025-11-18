@@ -48,7 +48,7 @@ async function getGitHubTodayCommits(username: string): Promise<{ count: number;
       throw new Error(`GitHub API 错误: ${response.status}`);
     }
 
-    const events = await response.json();
+    const events: any[] = await response.json();
 
     let commitCount = 0;
     const repos = new Set<string>();
