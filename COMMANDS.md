@@ -19,6 +19,18 @@
 - 秒数：`3600秒`、`1800s`（自动转换为分钟）
 - 纯数字：`30`（默认为分钟）
 
+### GitHub 相关
+
+| 命令 | 说明 | 示例 |
+|------|------|------|
+| `github` / `GitHub` / `代码` / `提交` | 查看今日 GitHub 提交数量 | `github` |
+
+根据提交数量会有不同的回复：
+- 0 次：提醒去写代码
+- 1-4 次：继续加油
+- 5-9 次：效率不错
+- 10+ 次：代码狂魔
+
 ### 互动功能
 
 | 命令 | 说明 | 示例 |
@@ -108,4 +120,7 @@ REMINDER_GROUP_ID="群号"           # 督促消息发送的群
 REMINDER_HOUR="19"                 # 督促时间（小时，24小时制）
 REMINDER_MINUTE="0"                # 督促时间（分钟）
 REMINDER_TIMEZONE="Australia/Melbourne"  # 时区
+
+# GitHub 配置
+GITHUB_USERNAME="你的GitHub用户名"
 ```

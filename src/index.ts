@@ -14,6 +14,9 @@ const REMINDER_HOUR = parseInt(process.env.REMINDER_HOUR || '19'); // 督促时�
 const REMINDER_MINUTE = parseInt(process.env.REMINDER_MINUTE || '0'); // 督促时间（分钟）
 const REMINDER_TIMEZONE = process.env.REMINDER_TIMEZONE || 'Australia/Melbourne'; // 时区
 
+// GitHub 配置
+const GITHUB_USERNAME = process.env.GITHUB_USERNAME || '';
+
 // 管理员列表（包含超级管理员和动态添加的管理员）
 const adminList: Set<string> = new Set();
 if (SUPER_ADMIN_QQ) {
@@ -25,6 +28,50 @@ let botEnabled = true;
 
 // 定时器引用
 let reminderTimer: NodeJS.Timeout | null = null;
+
+// 获取 GitHub 今日提交数量
+async function getGitHubTodayCommits(username: string): Promise<{ count: number; repos: string[] }> {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayISO = today.toISOString().split('T')[0];
+
+  try {
+    // 获取用户今天的事件
+    const response = await fetch(`https://api.github.com/users/${username}/events?per_page=100`, {
+      headers: {
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'QQ-Bot'
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`GitHub API 错误: ${response.status}`);
+    }
+
+    const events = await response.json();
+
+    let commitCount = 0;
+    const repos = new Set<string>();
+
+    for (const event of events) {
+      if (event.type === 'PushEvent') {
+        const eventDate = new Date(event.created_at).toISOString().split('T')[0];
+        if (eventDate === todayISO) {
+          const commits = event.payload?.commits?.length || 0;
+          commitCount += commits;
+          if (event.repo?.name) {
+            repos.add(event.repo.name.split('/')[1] || event.repo.name);
+          }
+        }
+      }
+    }
+
+    return { count: commitCount, repos: Array.from(repos) };
+  } catch (error) {
+    console.error('获取 GitHub 数据失败:', error);
+    throw error;
+  }
+}
 
 interface Message {
   post_type: string;
@@ -564,6 +611,46 @@ function connectBot() {
           sendReply(ws, event, 'pong');
           break;
 
+        case 'github':
+        case 'GitHub':
+        case '代码':
+        case '提交':
+          if (!GITHUB_USERNAME) {
+            sendReply(ws, event, '未配置 GitHub 用户名（GITHUB_USERNAME）');
+            break;
+          }
+          try {
+            const { count, repos } = await getGitHubTodayCommits(GITHUB_USERNAME);
+            let response = '';
+
+            if (count === 0) {
+              const messages = [
+                `😅 今天还没有提交代码哦～\n快去写点什么吧！`,
+                `🤔 GitHub 今日提交: 0\n代码不会自己写的哦～`,
+                `📭 今天的 GitHub 还是空空的～\n该开始coding了！`
+              ];
+              response = messages[Math.floor(Math.random() * messages.length)];
+            } else if (count < 5) {
+              response = `👍 今日 GitHub 提交: ${count} 次\n` +
+                `📁 涉及仓库: ${repos.join(', ')}\n` +
+                `继续加油！`;
+            } else if (count < 10) {
+              response = `🔥 今日 GitHub 提交: ${count} 次\n` +
+                `📁 涉及仓库: ${repos.join(', ')}\n` +
+                `效率不错！`;
+            } else {
+              response = `🚀 今日 GitHub 提交: ${count} 次\n` +
+                `📁 涉及仓库: ${repos.join(', ')}\n` +
+                `太强了！代码狂魔！`;
+            }
+
+            sendReply(ws, event, response);
+          } catch (error) {
+            console.error('获取 GitHub 数据失败:', error);
+            sendReply(ws, event, '获取 GitHub 数据失败，请稍后重试');
+          }
+          break;
+
         case '督促':
         case '测试督促':
           if (!isSuperAdmin) {
@@ -666,6 +753,7 @@ function connectBot() {
             '打卡 [时长] [内容]\n' +
             '  例: 打卡 30分钟 学习TypeScript\n\n' +
             '打卡记录 - 查看打卡统计\n\n' +
+            'github/代码 - 查看今日GitHub提交\n\n' +
             '建议 [内容] - 提交功能建议\n\n' +
             'ping - 测试机器人';
 
