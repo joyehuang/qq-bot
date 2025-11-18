@@ -15,6 +15,7 @@
 - `src/index.ts` - 主程序入口
 - `prisma/` - 数据库 schema 和迁移
 - `napcat/` - NapCat 配置文件
+- `COMMANDS.md` - **指令文档（新增/删除指令时必须同步更新）**
 
 ## 开发命令
 

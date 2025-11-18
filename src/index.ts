@@ -5,8 +5,14 @@ import { PrismaClient, Checkin, Suggestion } from './generated/prisma/client';
 const WS_URL = 'ws://localhost:6100';
 const prisma = new PrismaClient();
 
-// 管理员QQ号（只有管理员可以控制开关机）
-const ADMIN_QQ = process.env.ADMIN_QQ || '';
+// 超级管理员QQ号（从环境变量读取，不可被删除）
+const SUPER_ADMIN_QQ = process.env.ADMIN_QQ || '';
+
+// 管理员列表（包含超级管理员和动态添加的管理员）
+const adminList: Set<string> = new Set();
+if (SUPER_ADMIN_QQ) {
+  adminList.add(SUPER_ADMIN_QQ);
+}
 
 // 机器人状态
 let botEnabled = true;
@@ -383,7 +389,8 @@ function connectBot() {
       }
 
       const userId = event.user_id?.toString() || '';
-      const isAdmin = ADMIN_QQ && userId === ADMIN_QQ;
+      const isAdmin = adminList.has(userId);
+      const isSuperAdmin = userId === SUPER_ADMIN_QQ;
 
       // 检查开关机命令（只有管理员可以操作）
       if (isAdmin) {
@@ -447,18 +454,88 @@ function connectBot() {
           await handleSuggestion(ws, event, args.join(' '));
           break;
 
+        case '添加管理':
+        case '添加管理员':
+          if (!isSuperAdmin) {
+            sendReply(ws, event, '只有超级管理员才能添加管理员哦～');
+            break;
+          }
+          if (args.length === 0) {
+            sendReply(ws, event, '请指定要添加的管理员QQ号\n格式: 添加管理 [QQ号]');
+            break;
+          }
+          const addQQ = args[0].replace(/\D/g, '');
+          if (!addQQ) {
+            sendReply(ws, event, 'QQ号格式不正确');
+            break;
+          }
+          if (adminList.has(addQQ)) {
+            sendReply(ws, event, `${addQQ} 已经是管理员了`);
+          } else {
+            adminList.add(addQQ);
+            sendReply(ws, event, `✅ 已添加管理员: ${addQQ}\n当前管理员: ${Array.from(adminList).join(', ')}`);
+          }
+          break;
+
+        case '删除管理':
+        case '删除管理员':
+        case '移除管理':
+        case '移除管理员':
+          if (!isSuperAdmin) {
+            sendReply(ws, event, '只有超级管理员才能删除管理员哦～');
+            break;
+          }
+          if (args.length === 0) {
+            sendReply(ws, event, '请指定要删除的管理员QQ号\n格式: 删除管理 [QQ号]');
+            break;
+          }
+          const delQQ = args[0].replace(/\D/g, '');
+          if (!delQQ) {
+            sendReply(ws, event, 'QQ号格式不正确');
+            break;
+          }
+          if (delQQ === SUPER_ADMIN_QQ) {
+            sendReply(ws, event, '不能删除超级管理员哦～');
+          } else if (!adminList.has(delQQ)) {
+            sendReply(ws, event, `${delQQ} 不是管理员`);
+          } else {
+            adminList.delete(delQQ);
+            sendReply(ws, event, `✅ 已删除管理员: ${delQQ}\n当前管理员: ${Array.from(adminList).join(', ')}`);
+          }
+          break;
+
+        case '管理员列表':
+        case '管理列表':
+          if (!isAdmin) {
+            sendReply(ws, event, '只有管理员才能查看管理员列表');
+            break;
+          }
+          sendReply(ws, event, `👑 管理员列表:\n${Array.from(adminList).map(qq => qq === SUPER_ADMIN_QQ ? `${qq} (超管)` : qq).join('\n')}`);
+          break;
+
         case '帮助':
         case 'help':
-          sendReply(
-            ws,
-            event,
-            '📖 可用命令:\n\n' +
+          let helpMsg = '📖 可用命令:\n\n' +
             '打卡 [时长] [内容]\n' +
             '  例: 打卡 30分钟 学习TypeScript\n\n' +
             '打卡记录 - 查看打卡统计\n\n' +
             '建议 [内容] - 提交功能建议\n\n' +
-            'ping - 测试机器人'
-          );
+            'ping - 测试机器人';
+
+          if (isAdmin) {
+            helpMsg += '\n\n👑 管理员命令:\n' +
+              '闭嘴/关机 - 关闭机器人\n' +
+              '开机/醒醒 - 开启机器人\n' +
+              '管理员列表 - 查看管理员';
+          }
+
+          if (isSuperAdmin) {
+            helpMsg += '\n\n⭐ 超管命令:\n' +
+              '添加管理 [QQ] - 添加管理员\n' +
+              '删除管理 [QQ] - 删除管理员';
+          }
+
+          sendReply(ws, event, helpMsg);
           break;
 
         default:
