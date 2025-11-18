@@ -36,3 +36,16 @@ model Checkin {
 
   @@map("checkins")
 }
+
+// 功能建议表
+model Suggestion {
+  id        Int      @id @default(autoincrement())
+  qqNumber  String   @map("qq_number")
+  nickname  String
+  groupId   String   @map("group_id")
+  content   String   // 建议内容
+  status    String   @default("pending") // pending, accepted, rejected, completed
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("suggestions")
+}

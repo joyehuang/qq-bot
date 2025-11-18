@@ -1,6 +1,6 @@
 import "dotenv/config";
 import WebSocket from 'ws';
-import { PrismaClient, Checkin } from './generated/prisma/client';
+import { PrismaClient, Checkin, Suggestion } from './generated/prisma/client';
 
 const WS_URL = 'ws://localhost:6100';
 const prisma = new PrismaClient();
@@ -282,6 +282,46 @@ async function handleCheckinStats(
   }
 }
 
+// 处理功能建议
+async function handleSuggestion(
+  ws: WebSocket,
+  event: Message,
+  content: string
+): Promise<void> {
+  const userId = event.user_id!;
+  const groupId = event.group_id?.toString() || 'private';
+  const nickname = event.sender?.card || event.sender?.nickname || '未知用户';
+
+  if (!content.trim()) {
+    sendReply(ws, event, '请告诉我你的建议内容哦～\n格式: 建议 [你的想法]');
+    return;
+  }
+
+  try {
+    await prisma.suggestion.create({
+      data: {
+        qqNumber: userId.toString(),
+        nickname,
+        groupId,
+        content: content.trim()
+      }
+    });
+
+    const responses = [
+      `💡 收到！你的建议已经记录下来啦～\n开发者会认真考虑的，感谢你的反馈！`,
+      `📝 好的好的！已经把你的想法记在小本本上了～\n下次更新说不定就能看到哦！`,
+      `✨ 感谢你的宝贵建议！\n我们会努力变得更好的～`,
+      `🎯 建议已收到！非常感谢你的反馈～\n你的想法对我们很重要！`
+    ];
+    const randomResponse = responses[Math.floor(Math.random() * responses.length)];
+    sendReply(ws, event, randomResponse);
+
+  } catch (error) {
+    console.error('保存建议失败:', error);
+    sendReply(ws, event, '保存建议失败，请稍后重试');
+  }
+}
+
 // 发送回复
 function sendReply(ws: WebSocket, event: Message, message: string): void {
   const reply = {
@@ -354,6 +394,12 @@ function connectBot() {
           sendReply(ws, event, 'pong');
           break;
 
+        case '建议':
+        case '反馈':
+        case '新功能':
+          await handleSuggestion(ws, event, args.join(' '));
+          break;
+
         case '帮助':
         case 'help':
           sendReply(
@@ -363,6 +409,7 @@ function connectBot() {
             '打卡 [时长] [内容]\n' +
             '  例: 打卡 30分钟 学习TypeScript\n\n' +
             '打卡记录 - 查看打卡统计\n\n' +
+            '建议 [内容] - 提交功能建议\n\n' +
             'ping - 测试机器人'
           );
           break;
