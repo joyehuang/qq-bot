@@ -8,6 +8,12 @@ const prisma = new PrismaClient();
 // 超级管理员QQ号（从环境变量读取，不可被删除）
 const SUPER_ADMIN_QQ = process.env.ADMIN_QQ || '';
 
+// 督促打卡配置
+const REMINDER_GROUP_ID = process.env.REMINDER_GROUP_ID || ''; // 督促消息发送的群号
+const REMINDER_HOUR = parseInt(process.env.REMINDER_HOUR || '19'); // 督促时间（小时，24小时制）
+const REMINDER_MINUTE = parseInt(process.env.REMINDER_MINUTE || '0'); // 督促时间（分钟）
+const REMINDER_TIMEZONE = process.env.REMINDER_TIMEZONE || 'Australia/Melbourne'; // 时区
+
 // 管理员列表（包含超级管理员和动态添加的管理员）
 const adminList: Set<string> = new Set();
 if (SUPER_ADMIN_QQ) {
@@ -16,6 +22,9 @@ if (SUPER_ADMIN_QQ) {
 
 // 机器人状态
 let botEnabled = true;
+
+// 定时器引用
+let reminderTimer: NodeJS.Timeout | null = null;
 
 interface Message {
   post_type: string;
@@ -359,6 +368,107 @@ function sendReply(ws: WebSocket, event: Message, message: string): void {
   ws.send(JSON.stringify(reply));
 }
 
+// 发送群消息（用于主动发送）
+function sendGroupMessage(ws: WebSocket, groupId: string, message: string): void {
+  const msg = {
+    action: 'send_group_msg',
+    params: {
+      group_id: parseInt(groupId),
+      message
+    }
+  };
+  ws.send(JSON.stringify(msg));
+}
+
+// 检查管理员今日是否打卡
+async function checkAdminCheckin(): Promise<boolean> {
+  if (!SUPER_ADMIN_QQ) return true;
+
+  const user = await prisma.user.findUnique({
+    where: { qqNumber: SUPER_ADMIN_QQ }
+  });
+
+  if (!user) return false;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const todayCheckin = await prisma.checkin.findFirst({
+    where: {
+      userId: user.id,
+      createdAt: { gte: today }
+    }
+  });
+
+  return !!todayCheckin;
+}
+
+// 获取下次督促时间（毫秒）
+function getNextReminderTime(): number {
+  const now = new Date();
+
+  // 获取目标时区的当前时间
+  const targetTime = new Date(now.toLocaleString('en-US', { timeZone: REMINDER_TIMEZONE }));
+
+  // 设置今天的督促时间
+  const reminderTime = new Date(targetTime);
+  reminderTime.setHours(REMINDER_HOUR, REMINDER_MINUTE, 0, 0);
+
+  // 如果今天的时间已过，设置为明天
+  if (reminderTime <= targetTime) {
+    reminderTime.setDate(reminderTime.getDate() + 1);
+  }
+
+  // 计算时间差（需要转换回本地时间）
+  const nowInTimezone = new Date(now.toLocaleString('en-US', { timeZone: REMINDER_TIMEZONE }));
+  const diff = reminderTime.getTime() - nowInTimezone.getTime();
+
+  return diff;
+}
+
+// 启动打卡督促定时器
+function startReminderTimer(ws: WebSocket): void {
+  if (!SUPER_ADMIN_QQ || !REMINDER_GROUP_ID) {
+    console.log('督促功能未配置（需要 ADMIN_QQ 和 REMINDER_GROUP_ID）');
+    return;
+  }
+
+  const scheduleNextReminder = () => {
+    const delay = getNextReminderTime();
+    const nextTime = new Date(Date.now() + delay);
+
+    console.log(`下次打卡督促时间: ${nextTime.toLocaleString('zh-CN', { timeZone: REMINDER_TIMEZONE })} (${REMINDER_TIMEZONE})`);
+
+    reminderTimer = setTimeout(async () => {
+      try {
+        const hasCheckedIn = await checkAdminCheckin();
+
+        if (!hasCheckedIn && botEnabled) {
+          const messages = [
+            `[CQ:at,qq=${SUPER_ADMIN_QQ}] 今天还没打卡哦！快来记录一下今天的学习/运动吧～ 💪`,
+            `[CQ:at,qq=${SUPER_ADMIN_QQ}] 打卡时间到！今天学习/运动了吗？别忘了记录哦～ 📝`,
+            `[CQ:at,qq=${SUPER_ADMIN_QQ}] 嘿！今天的打卡还没完成呢，加油！ ⏰`,
+            `[CQ:at,qq=${SUPER_ADMIN_QQ}] 温馨提醒：今日打卡尚未完成～ 🔔`
+          ];
+          const randomMsg = messages[Math.floor(Math.random() * messages.length)];
+          sendGroupMessage(ws, REMINDER_GROUP_ID, randomMsg);
+          console.log('已发送打卡督促消息');
+        } else if (hasCheckedIn) {
+          console.log('管理员今日已打卡，跳过督促');
+        }
+      } catch (error) {
+        console.error('督促检查失败:', error);
+      }
+
+      // 调度下一次
+      scheduleNextReminder();
+    }, delay);
+  };
+
+  scheduleNextReminder();
+  console.log('打卡督促定时器已启动');
+}
+
 function connectBot() {
   console.log('正在连接 NapCat...');
 
@@ -366,6 +476,8 @@ function connectBot() {
 
   ws.on('open', () => {
     console.log('✅ 已连接到 NapCat');
+    // 启动打卡督促定时器
+    startReminderTimer(ws);
   });
 
   ws.on('message', async (data) => {
@@ -555,6 +667,11 @@ function connectBot() {
 
   ws.on('close', () => {
     console.log('连接已断开，5秒后重连...');
+    // 清除定时器
+    if (reminderTimer) {
+      clearTimeout(reminderTimer);
+      reminderTimer = null;
+    }
     setTimeout(connectBot, 5000);
   });
 
@@ -566,6 +683,9 @@ function connectBot() {
 // 优雅退出
 process.on('SIGINT', async () => {
   console.log('\n正在关闭...');
+  if (reminderTimer) {
+    clearTimeout(reminderTimer);
+  }
   await prisma.$disconnect();
   process.exit(0);
 });
