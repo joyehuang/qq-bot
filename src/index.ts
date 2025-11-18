@@ -2,7 +2,7 @@ import "dotenv/config";
 import WebSocket from 'ws';
 import { PrismaClient, Checkin, Suggestion } from './generated/prisma/client';
 
-const WS_URL = 'ws://localhost:6100';
+const WS_URL = process.env.WS_URL || 'ws://localhost:6100';
 const prisma = new PrismaClient();
 
 // 超级管理员QQ号（从环境变量读取，不可被删除）

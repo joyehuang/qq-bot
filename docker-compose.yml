@@ -17,3 +17,24 @@ services:
     mac_address: "02:42:ac:11:00:02"
     stdin_open: true
     tty: true
+
+  bot:
+    build: .
+    container_name: qq-bot
+    restart: unless-stopped
+    depends_on:
+      - napcat
+    volumes:
+      - ./prisma:/app/prisma
+    environment:
+      - WS_URL=ws://napcat:6100
+      - DATABASE_URL=file:./dev.db
+      - ADMIN_QQ=1462939861
+      - REMINDER_GROUP_ID=831907794
+      - REMINDER_HOUR=19
+      - REMINDER_MINUTE=0
+      - REMINDER_TIMEZONE=Australia/Melbourne
+      - GITHUB_USERNAME=joyehuang
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+    # 等待 napcat 启动后再连接
+    command: sh -c "sleep 5 && npx ts-node src/index.ts"
