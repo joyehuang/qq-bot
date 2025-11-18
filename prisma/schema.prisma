@@ -1,0 +1,38 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// 用户表
+model User {
+  id        Int       @id @default(autoincrement())
+  qqNumber  String    @unique @map("qq_number")
+  nickname  String
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  checkins  Checkin[]
+
+  @@map("users")
+}
+
+// 打卡记录表
+model Checkin {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  groupId   String   @map("group_id")
+  duration  Int      // 时长（分钟）
+  content   String   // 打卡内容
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("checkins")
+}

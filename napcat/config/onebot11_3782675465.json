@@ -1,0 +1,21 @@
+{
+  "network": {
+    "httpServers": [],
+    "httpClients": [],
+    "websocketServers": [
+      {
+        "name": "ws-server",
+        "enable": true,
+        "host": "0.0.0.0",
+        "port": 6100,
+        "messagePostFormat": "array",
+        "reportSelfMessage": false,
+        "token": "",
+        "enableForcePushEvent": true,
+        "debug": false,
+        "heartInterval": 30000
+      }
+    ],
+    "websocketClients": []
+  }
+}
