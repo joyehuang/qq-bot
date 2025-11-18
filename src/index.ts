@@ -5,6 +5,12 @@ import { PrismaClient, Checkin, Suggestion } from './generated/prisma/client';
 const WS_URL = 'ws://localhost:6100';
 const prisma = new PrismaClient();
 
+// 管理员QQ号（只有管理员可以控制开关机）
+const ADMIN_QQ = process.env.ADMIN_QQ || '';
+
+// 机器人状态
+let botEnabled = true;
+
 interface Message {
   post_type: string;
   message_type?: string;
@@ -34,6 +40,12 @@ const INTRO_PATTERNS = {
   identity: ['你是谁', '你叫什么', '你是什么', '你的名字', '介绍一下', '自我介绍', '是什么机器人', '什么bot', '你是啥'],
   ability: ['你能做什么', '你会什么', '你可以做什么', '有什么功能', '能干什么', '会干什么', '有啥功能', '能干啥', '怎么用', '如何使用', '使用方法', '使用说明'],
   greeting: ['你好', '在吗', '在不在', 'hello', 'hi', '嗨', '哈喽', '早上好', '下午好', '晚上好']
+};
+
+// 开关机关键词
+const POWER_PATTERNS = {
+  shutdown: ['闭嘴', '关机', '不准说话', '安静', '别说了', '休息', '下班', '关闭', '停止', '别吵'],
+  startup: ['开机', '说话', '醒醒', '起来', '上班', '开启', '启动', '工作', '唤醒', '醒来']
 };
 
 // 检查消息是否匹配某个模式组
@@ -367,6 +379,41 @@ function connectBot() {
 
       // 群消息需要 @，私聊直接响应
       if (event.message_type === 'group' && !isAtMe) {
+        return;
+      }
+
+      const userId = event.user_id?.toString() || '';
+      const isAdmin = ADMIN_QQ && userId === ADMIN_QQ;
+
+      // 检查开关机命令（只有管理员可以操作）
+      if (isAdmin) {
+        if (matchPattern(cleanMessage, POWER_PATTERNS.shutdown)) {
+          botEnabled = false;
+          const responses = [
+            '好的，我去休息啦～有事再叫我 😴',
+            '收到！进入睡眠模式... 💤',
+            '好吧，我闭嘴了 🤐',
+            '遵命！下班咯～ 🌙'
+          ];
+          sendReply(ws, event, responses[Math.floor(Math.random() * responses.length)]);
+          return;
+        }
+
+        if (matchPattern(cleanMessage, POWER_PATTERNS.startup)) {
+          botEnabled = true;
+          const responses = [
+            '我回来啦！有什么可以帮你的吗？ 😊',
+            '收到！已重新上线～ ✨',
+            '好的，我醒了！ ☀️',
+            '开工开工！让我们开始吧～ 💪'
+          ];
+          sendReply(ws, event, responses[Math.floor(Math.random() * responses.length)]);
+          return;
+        }
+      }
+
+      // 如果机器人被关闭，不响应任何命令
+      if (!botEnabled) {
         return;
       }
 
