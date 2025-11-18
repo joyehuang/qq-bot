@@ -18,6 +18,9 @@ const REMINDER_TIMEZONE = process.env.REMINDER_TIMEZONE || 'Australia/Melbourne'
 const GITHUB_USERNAME = process.env.GITHUB_USERNAME || '';
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || ''; // 用于访问私有仓库
 
+// 机器人QQ号（用于检测是否被@）
+const BOT_QQ = process.env.BOT_QQ || '';
+
 // 管理员列表（包含超级管理员和动态添加的管理员）
 const adminList: Set<string> = new Set();
 if (SUPER_ADMIN_QQ) {
@@ -311,6 +314,13 @@ async function handleCheckin(
   const duration = parseDuration(durationStr);
   if (!duration || duration <= 0) {
     sendReply(ws, event, '时长格式错误！支持: 30分钟, 1小时, 1h30m, 90m, 1天, 3600秒');
+    return;
+  }
+
+  // 限制最大时长为7天（10080分钟），防止数据库溢出
+  const MAX_DURATION = 10080; // 7天
+  if (duration > MAX_DURATION) {
+    sendReply(ws, event, `时长太长了！最多支持7天（${MAX_DURATION}分钟）`);
     return;
   }
 
@@ -690,8 +700,11 @@ function connectBot() {
         .replace(/\[CQ:at,qq=\d+\]\s*/g, '')
         .trim();
 
-      // 检查是否是群消息且被 @
-      const isAtMe = message.includes('[CQ:at,qq=');
+      // 检查是否真的 @ 了机器人
+      // 如果配置了 BOT_QQ，精确匹配；否则回退到模糊匹配
+      const isAtMe = BOT_QQ
+        ? message.includes(`[CQ:at,qq=${BOT_QQ}]`)
+        : message.includes('[CQ:at,qq=');
 
       // 群消息需要 @，私聊直接响应
       if (event.message_type === 'group' && !isAtMe) {
@@ -925,7 +938,11 @@ function connectBot() {
           break;
 
         default:
-          if (cleanMessage) {
+          // 只有当消息看起来像命令时才回复（排除表情、图片等CQ码和空消息）
+          // 检查是否是纯文字命令（不以特殊字符开头，且不是空的）
+          if (cleanMessage &&
+              !cleanMessage.startsWith('[CQ:') &&
+              /^[\u4e00-\u9fa5a-zA-Z]/.test(cleanMessage)) {
             sendReply(ws, event, '未知命令，发送"帮助"查看可用命令');
           }
       }

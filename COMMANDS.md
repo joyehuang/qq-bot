@@ -120,6 +120,9 @@
 在 `.env` 文件中配置：
 
 ```env
+# 机器人QQ号（用于精确检测@，推荐配置）
+BOT_QQ="机器人QQ号"
+
 # 超级管理员QQ号
 ADMIN_QQ="你的QQ号"
 
@@ -136,3 +139,7 @@ GITHUB_USERNAME="你的GitHub用户名"
 # 需要 repo 权限
 GITHUB_TOKEN="ghp_xxxx"
 ```
+
+**注意事项：**
+- 单次打卡时长最多支持 7 天（10080 分钟）
+- 配置 `BOT_QQ` 可以避免机器人误响应其他人的 @ 消息
