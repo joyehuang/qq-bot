@@ -564,6 +564,37 @@ function connectBot() {
           sendReply(ws, event, 'pong');
           break;
 
+        case '督促':
+        case '测试督促':
+          if (!isSuperAdmin) {
+            sendReply(ws, event, '只有超级管理员才能测试督促功能');
+            break;
+          }
+          if (!REMINDER_GROUP_ID) {
+            sendReply(ws, event, '督促功能未配置群号（REMINDER_GROUP_ID）');
+            break;
+          }
+          try {
+            const hasCheckedIn = await checkAdminCheckin();
+            if (hasCheckedIn) {
+              sendReply(ws, event, '✅ 你今天已经打卡了！\n（督促消息不会发送）');
+            } else {
+              const messages = [
+                `[CQ:at,qq=${SUPER_ADMIN_QQ}] 今天还没打卡哦！快来记录一下今天的学习/运动吧～ 💪`,
+                `[CQ:at,qq=${SUPER_ADMIN_QQ}] 打卡时间到！今天学习/运动了吗？别忘了记录哦～ 📝`,
+                `[CQ:at,qq=${SUPER_ADMIN_QQ}] 嘿！今天的打卡还没完成呢，加油！ ⏰`,
+                `[CQ:at,qq=${SUPER_ADMIN_QQ}] 温馨提醒：今日打卡尚未完成～ 🔔`
+              ];
+              const randomMsg = messages[Math.floor(Math.random() * messages.length)];
+              sendGroupMessage(ws, REMINDER_GROUP_ID, randomMsg);
+              sendReply(ws, event, '📢 督促消息已发送！');
+            }
+          } catch (error) {
+            console.error('测试督促失败:', error);
+            sendReply(ws, event, '测试督促失败，请查看日志');
+          }
+          break;
+
         case '建议':
         case '反馈':
         case '新功能':
@@ -648,7 +679,8 @@ function connectBot() {
           if (isSuperAdmin) {
             helpMsg += '\n\n⭐ 超管命令:\n' +
               '添加管理 [QQ] - 添加管理员\n' +
-              '删除管理 [QQ] - 删除管理员';
+              '删除管理 [QQ] - 删除管理员\n' +
+              '督促 - 测试打卡督促';
           }
 
           sendReply(ws, event, helpMsg);
