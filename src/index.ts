@@ -32,43 +32,76 @@ let reminderTimer: NodeJS.Timeout | null = null;
 
 // 获取 GitHub 今日提交数量
 async function getGitHubTodayCommits(username: string): Promise<{ count: number; repos: string[] }> {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const todayISO = today.toISOString().split('T')[0];
+  // 使用配置的时区计算今天的日期范围
+  const now = new Date();
+  const todayInTimezone = new Date(now.toLocaleString('en-US', { timeZone: REMINDER_TIMEZONE }));
+  const todayStart = new Date(todayInTimezone);
+  todayStart.setHours(0, 0, 0, 0);
+
+  // 转换为 ISO 格式用于比较
+  const todayISO = todayStart.toISOString().split('T')[0];
 
   try {
-    // 获取用户今天的事件
     const headers: Record<string, string> = {
       'Accept': 'application/vnd.github.v3+json',
       'User-Agent': 'QQ-Bot'
     };
 
-    // 如果有 Token，添加认证头（可以访问私有仓库）
     if (GITHUB_TOKEN) {
       headers['Authorization'] = `token ${GITHUB_TOKEN}`;
     }
 
-    const response = await fetch(`https://api.github.com/users/${username}/events?per_page=100`, {
-      headers
-    });
-
-    if (!response.ok) {
-      throw new Error(`GitHub API 错误: ${response.status}`);
-    }
-
-    const events = await response.json() as any[];
-
     let commitCount = 0;
     const repos = new Set<string>();
 
-    for (const event of events) {
-      if (event.type === 'PushEvent') {
-        const eventDate = new Date(event.created_at).toISOString().split('T')[0];
-        if (eventDate === todayISO) {
-          const commits = event.payload?.commits?.length || 0;
-          commitCount += commits;
-          if (event.repo?.name) {
-            repos.add(event.repo.name.split('/')[1] || event.repo.name);
+    // 方法1: 获取用户事件（公开 + 有token时的私有）
+    const eventsResponse = await fetch(`https://api.github.com/users/${username}/events?per_page=100`, {
+      headers
+    });
+
+    if (eventsResponse.ok) {
+      const events = await eventsResponse.json() as any[];
+
+      for (const event of events) {
+        if (event.type === 'PushEvent') {
+          // 将事件时间转换为配置的时区
+          const eventTime = new Date(event.created_at);
+          const eventInTimezone = new Date(eventTime.toLocaleString('en-US', { timeZone: REMINDER_TIMEZONE }));
+          const eventDateISO = eventInTimezone.toISOString().split('T')[0];
+
+          if (eventDateISO === todayISO) {
+            const commits = event.payload?.commits?.length || 0;
+            commitCount += commits;
+            if (event.repo?.name) {
+              repos.add(event.repo.name.split('/')[1] || event.repo.name);
+            }
+          }
+        }
+      }
+    }
+
+    // 方法2: 如果有 token，额外获取私有仓库的事件
+    if (GITHUB_TOKEN) {
+      const privateEventsResponse = await fetch(`https://api.github.com/users/${username}/events/private?per_page=100`, {
+        headers
+      });
+
+      if (privateEventsResponse.ok) {
+        const privateEvents = await privateEventsResponse.json() as any[];
+
+        for (const event of privateEvents) {
+          if (event.type === 'PushEvent') {
+            const eventTime = new Date(event.created_at);
+            const eventInTimezone = new Date(eventTime.toLocaleString('en-US', { timeZone: REMINDER_TIMEZONE }));
+            const eventDateISO = eventInTimezone.toISOString().split('T')[0];
+
+            if (eventDateISO === todayISO) {
+              const commits = event.payload?.commits?.length || 0;
+              commitCount += commits;
+              if (event.repo?.name) {
+                repos.add(event.repo.name.split('/')[1] || event.repo.name);
+              }
+            }
           }
         }
       }
