@@ -123,4 +123,8 @@ REMINDER_TIMEZONE="Australia/Melbourne"  # 时区
 
 # GitHub 配置
 GITHUB_USERNAME="你的GitHub用户名"
+# GitHub Token（可选，用于访问私有仓库）
+# 生成地址: https://github.com/settings/tokens
+# 需要 repo 权限
+GITHUB_TOKEN="ghp_xxxx"
 ```

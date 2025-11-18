@@ -16,6 +16,7 @@ const REMINDER_TIMEZONE = process.env.REMINDER_TIMEZONE || 'Australia/Melbourne'
 
 // GitHub 配置
 const GITHUB_USERNAME = process.env.GITHUB_USERNAME || '';
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || ''; // 用于访问私有仓库
 
 // 管理员列表（包含超级管理员和动态添加的管理员）
 const adminList: Set<string> = new Set();
@@ -37,11 +38,18 @@ async function getGitHubTodayCommits(username: string): Promise<{ count: number;
 
   try {
     // 获取用户今天的事件
+    const headers: Record<string, string> = {
+      'Accept': 'application/vnd.github.v3+json',
+      'User-Agent': 'QQ-Bot'
+    };
+
+    // 如果有 Token，添加认证头（可以访问私有仓库）
+    if (GITHUB_TOKEN) {
+      headers['Authorization'] = `token ${GITHUB_TOKEN}`;
+    }
+
     const response = await fetch(`https://api.github.com/users/${username}/events?per_page=100`, {
-      headers: {
-        'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'QQ-Bot'
-      }
+      headers
     });
 
     if (!response.ok) {
