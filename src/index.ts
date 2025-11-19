@@ -546,18 +546,24 @@ async function handleCheckinStats(
       return;
     }
 
-    // 获取总统计（只统计正常打卡）
-    const totalStats = await prisma.checkin.aggregate({
+    // 获取总统计
+    const totalNormal = await prisma.checkin.aggregate({
       where: { userId: user.id, isLoan: false },
       _sum: { duration: true },
       _count: true
     });
 
-    // 获取今日统计（只统计正常打卡）
+    const totalLoan = await prisma.checkin.aggregate({
+      where: { userId: user.id, isLoan: true },
+      _sum: { duration: true },
+      _count: true
+    });
+
+    // 获取今日统计
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const todayStats = await prisma.checkin.aggregate({
+    const todayNormal = await prisma.checkin.aggregate({
       where: {
         userId: user.id,
         createdAt: { gte: today },
@@ -566,6 +572,22 @@ async function handleCheckinStats(
       _sum: { duration: true },
       _count: true
     });
+
+    const todayLoan = await prisma.checkin.aggregate({
+      where: {
+        userId: user.id,
+        createdAt: { gte: today },
+        isLoan: true
+      },
+      _sum: { duration: true },
+      _count: true
+    });
+
+    // 计算净时长（正常打卡 - 贷款）
+    const totalNetMinutes = (totalNormal._sum.duration || 0) - (totalLoan._sum.duration || 0);
+    const todayNetMinutes = (todayNormal._sum.duration || 0) - (todayLoan._sum.duration || 0);
+    const totalCount = totalNormal._count + totalLoan._count;
+    const todayCount = todayNormal._count + todayLoan._count;
 
     // 获取当前负债
     const currentDebt = await getUserDebt(user.id);
@@ -577,12 +599,21 @@ async function handleCheckinStats(
       take: 5
     });
 
-    const totalMinutes = totalStats._sum.duration || 0;
-    const todayMinutes = todayStats._sum.duration || 0;
-
     let message = `📊 ${user.nickname} 的打卡统计\n\n`;
-    message += `今日: ${formatDuration(todayMinutes)} (${todayStats._count}次)\n`;
-    message += `累计: ${formatDuration(totalMinutes)} (${totalStats._count}次)\n`;
+
+    // 显示今日净时长
+    if (todayNetMinutes >= 0) {
+      message += `今日: ${formatDuration(todayNetMinutes)} (${todayCount}次)\n`;
+    } else {
+      message += `今日: -${formatDuration(Math.abs(todayNetMinutes))} (${todayCount}次)\n`;
+    }
+
+    // 显示累计净时长
+    if (totalNetMinutes >= 0) {
+      message += `累计: ${formatDuration(totalNetMinutes)} (${totalCount}次)\n`;
+    } else {
+      message += `累计: -${formatDuration(Math.abs(totalNetMinutes))} (${totalCount}次)\n`;
+    }
 
     // 显示负债信息
     if (currentDebt > 0) {
@@ -627,8 +658,8 @@ async function handleRanking(
       title = '📊 总打卡排行榜';
     }
 
-    // 查询排行数据（只统计正常打卡）
-    const rankings = await prisma.checkin.groupBy({
+    // 查询正常打卡数据
+    const normalStats = await prisma.checkin.groupBy({
       by: ['userId'],
       where: {
         groupId,
@@ -636,12 +667,41 @@ async function handleRanking(
         ...(startDate ? { createdAt: { gte: startDate } } : {})
       },
       _sum: { duration: true },
-      _count: true,
-      orderBy: { _sum: { duration: 'desc' } },
-      take: 10
+      _count: true
     });
 
-    if (rankings.length === 0) {
+    // 查询贷款打卡数据
+    const loanStats = await prisma.checkin.groupBy({
+      by: ['userId'],
+      where: {
+        groupId,
+        isLoan: true,
+        ...(startDate ? { createdAt: { gte: startDate } } : {})
+      },
+      _sum: { duration: true },
+      _count: true
+    });
+
+    // 合并计算净时长
+    const userNetDurations = new Map<number, { netDuration: number; count: number }>();
+
+    // 添加正常打卡
+    for (const stat of normalStats) {
+      const current = userNetDurations.get(stat.userId) || { netDuration: 0, count: 0 };
+      current.netDuration += stat._sum.duration || 0;
+      current.count += stat._count;
+      userNetDurations.set(stat.userId, current);
+    }
+
+    // 减去贷款打卡
+    for (const stat of loanStats) {
+      const current = userNetDurations.get(stat.userId) || { netDuration: 0, count: 0 };
+      current.netDuration -= stat._sum.duration || 0;
+      current.count += stat._count;
+      userNetDurations.set(stat.userId, current);
+    }
+
+    if (userNetDurations.size === 0) {
       const emptyMsg = type === 'today'
         ? '今天还没有人打卡哦，快来争第一！'
         : type === 'week'
@@ -650,6 +710,12 @@ async function handleRanking(
       sendReply(ws, event, emptyMsg);
       return;
     }
+
+    // 转换为数组并排序
+    const rankings = Array.from(userNetDurations.entries())
+      .map(([userId, data]) => ({ userId, ...data }))
+      .sort((a, b) => b.netDuration - a.netDuration)
+      .slice(0, 10);
 
     // 获取用户信息
     const userIds = rankings.map(r => r.userId);
@@ -665,12 +731,14 @@ async function handleRanking(
     rankings.forEach((r, i) => {
       const user = userMap.get(r.userId);
       const nickname = user?.nickname || '未知用户';
-      const duration = r._sum.duration || 0;
-      const count = r._count;
       const medal = i < 3 ? medals[i] : `${i + 1}.`;
 
       message += `${medal} ${nickname}\n`;
-      message += `   ${formatDuration(duration)} (${count}次)\n`;
+      if (r.netDuration >= 0) {
+        message += `   ${formatDuration(r.netDuration)} (${r.count}次)\n`;
+      } else {
+        message += `   -${formatDuration(Math.abs(r.netDuration))} (${r.count}次)\n`;
+      }
     });
 
     sendReply(ws, event, message);
@@ -696,8 +764,8 @@ async function handleGroupStats(
   try {
     const today = getTodayStart();
 
-    // 今日打卡统计
-    const todayStats = await prisma.checkin.aggregate({
+    // 今日正常打卡统计
+    const todayNormal = await prisma.checkin.aggregate({
       where: {
         groupId,
         createdAt: { gte: today },
@@ -707,13 +775,23 @@ async function handleGroupStats(
       _count: true
     });
 
-    // 今日打卡人数
+    // 今日贷款打卡统计
+    const todayLoan = await prisma.checkin.aggregate({
+      where: {
+        groupId,
+        createdAt: { gte: today },
+        isLoan: true
+      },
+      _sum: { duration: true },
+      _count: true
+    });
+
+    // 今日打卡人数（去重）
     const todayUsers = await prisma.checkin.groupBy({
       by: ['userId'],
       where: {
         groupId,
-        createdAt: { gte: today },
-        isLoan: false
+        createdAt: { gte: today }
       }
     });
 
@@ -728,7 +806,7 @@ async function handleGroupStats(
 
     // 本周统计
     const weekStart = getWeekStart();
-    const weekStats = await prisma.checkin.aggregate({
+    const weekNormal = await prisma.checkin.aggregate({
       where: {
         groupId,
         createdAt: { gte: weekStart },
@@ -738,11 +816,22 @@ async function handleGroupStats(
       _count: true
     });
 
-    const todayMinutes = todayStats._sum.duration || 0;
-    const todayCount = todayStats._count;
+    const weekLoan = await prisma.checkin.aggregate({
+      where: {
+        groupId,
+        createdAt: { gte: weekStart },
+        isLoan: true
+      },
+      _sum: { duration: true },
+      _count: true
+    });
+
+    // 计算净时长
+    const todayNetMinutes = (todayNormal._sum.duration || 0) - (todayLoan._sum.duration || 0);
+    const todayCount = todayNormal._count + todayLoan._count;
     const todayUserCount = todayUsers.length;
-    const weekMinutes = weekStats._sum.duration || 0;
-    const weekCount = weekStats._count;
+    const weekNetMinutes = (weekNormal._sum.duration || 0) - (weekLoan._sum.duration || 0);
+    const weekCount = weekNormal._count + weekLoan._count;
 
     // 计算打卡率
     const checkinRate = totalUsers > 0
@@ -753,10 +842,18 @@ async function handleGroupStats(
     message += `📅 今日\n`;
     message += `├ 打卡人数: ${todayUserCount}/${totalUsers}人 (${checkinRate}%)\n`;
     message += `├ 打卡次数: ${todayCount}次\n`;
-    message += `└ 总时长: ${formatDuration(todayMinutes)}\n\n`;
+    if (todayNetMinutes >= 0) {
+      message += `└ 净时长: ${formatDuration(todayNetMinutes)}\n\n`;
+    } else {
+      message += `└ 净时长: -${formatDuration(Math.abs(todayNetMinutes))}\n\n`;
+    }
     message += `📅 本周\n`;
     message += `├ 打卡次数: ${weekCount}次\n`;
-    message += `└ 总时长: ${formatDuration(weekMinutes)}`;
+    if (weekNetMinutes >= 0) {
+      message += `└ 净时长: ${formatDuration(weekNetMinutes)}`;
+    } else {
+      message += `└ 净时长: -${formatDuration(Math.abs(weekNetMinutes))}`;
+    }
 
     sendReply(ws, event, message);
 
