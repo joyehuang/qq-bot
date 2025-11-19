@@ -139,6 +139,7 @@ const BOT_INFO = {
     '📝 打卡 [时长] [内容] - 记录打卡',
     '💸 打卡 贷款 [时长] [内容] - 贷款打卡',
     '📊 打卡记录 - 查看统计',
+    '💰 负债 - 查看贷款负债',
     '💡 建议 [内容] - 提交功能建议',
     '❓ 帮助 - 查看所有命令'
   ]
@@ -517,6 +518,68 @@ async function handleCheckinStats(
   }
 }
 
+// 查询负债情况
+async function handleDebtQuery(
+  ws: WebSocket,
+  event: Message
+): Promise<void> {
+  const userId = event.user_id!;
+
+  try {
+    const user = await prisma.user.findUnique({
+      where: { qqNumber: userId.toString() }
+    });
+
+    if (!user) {
+      sendReply(ws, event, '你还没有打卡记录哦，快来打卡吧！');
+      return;
+    }
+
+    const currentDebt = await getUserDebt(user.id);
+
+    if (currentDebt === 0) {
+      const messages = [
+        `🎉 ${user.nickname} 目前无负债！\n你是个诚实守信的好同学～`,
+        `✨ ${user.nickname} 信用良好！\n没有任何贷款负债，继续保持！`,
+        `👍 ${user.nickname} 零负债！\n你的打卡信用评分：满分！`
+      ];
+      sendReply(ws, event, messages[Math.floor(Math.random() * messages.length)]);
+    } else {
+      // 根据负债程度给出不同的调侃
+      let debtLevel = '';
+      let advice = '';
+
+      if (currentDebt <= 60) {
+        debtLevel = '轻度负债';
+        advice = '小问题，一次打卡就能还清！';
+      } else if (currentDebt <= 180) {
+        debtLevel = '中度负债';
+        advice = '还能抢救一下，加油打卡吧！';
+      } else if (currentDebt <= 480) {
+        debtLevel = '重度负债';
+        advice = '这负债有点多啊，得加把劲了！';
+      } else {
+        debtLevel = '濒临破产';
+        advice = '打卡界的老赖实锤了！快还债！';
+      }
+
+      sendReply(
+        ws,
+        event,
+        `💸 ${user.nickname} 的负债情况\n\n` +
+        `📊 当前负债: ${formatDuration(currentDebt)}\n` +
+        `⚠️ 负债等级: ${debtLevel}\n` +
+        `💡 建议: ${advice}\n\n` +
+        `正常打卡即可自动还款哦～`
+      );
+    }
+
+  } catch (error) {
+    console.error('查询负债失败:', error);
+    sendReply(ws, event, '查询失败，请稍后重试');
+  }
+}
+
 // 处理功能建议
 async function handleSuggestion(
   ws: WebSocket,
@@ -769,6 +832,13 @@ function connectBot() {
           await handleCheckinStats(ws, event);
           break;
 
+        case '负债':
+        case '我的负债':
+        case '欠款':
+        case '查看负债':
+          await handleDebtQuery(ws, event);
+          break;
+
         case 'ping':
           sendReply(ws, event, 'pong');
           break;
@@ -918,6 +988,7 @@ function connectBot() {
             '  例: 打卡 贷款 1小时 学习\n' +
             '  (正常打卡可抵消贷款)\n\n' +
             '打卡记录 - 查看打卡统计\n\n' +
+            '负债/欠款 - 查看贷款负债\n\n' +
             'github/代码 - 查看今日GitHub提交\n\n' +
             '建议 [内容] - 提交功能建议\n\n' +
             'ping - 测试机器人';
