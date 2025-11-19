@@ -136,6 +136,7 @@ const BOT_INFO = {
   version: '1.1.0',
   description: '一个帮助大家记录和追踪学习、运动等活动的群打卡机器人',
   commands: [
+    '🆕 我想打卡 - 新人注册',
     '📝 打卡 [时长] [内容] - 记录打卡',
     '💸 打卡 贷款 [时长] [内容] - 贷款打卡',
     '📊 打卡记录 - 查看统计',
@@ -518,6 +519,71 @@ async function handleCheckinStats(
   }
 }
 
+// 注册打卡
+async function handleRegister(
+  ws: WebSocket,
+  event: Message
+): Promise<void> {
+  const userId = event.user_id!;
+  const nickname = event.sender?.card || event.sender?.nickname || '未知用户';
+
+  try {
+    // 检查用户是否已存在
+    let user = await prisma.user.findUnique({
+      where: { qqNumber: userId.toString() }
+    });
+
+    if (user) {
+      // 用户已存在，更新昵称
+      if (user.nickname !== nickname) {
+        user = await prisma.user.update({
+          where: { id: user.id },
+          data: { nickname }
+        });
+      }
+
+      sendReply(
+        ws,
+        event,
+        `👋 ${nickname}，你已经注册过啦！\n\n` +
+        `📊 快发送"打卡记录"查看你的统计吧～\n\n` +
+        `💡 打卡格式: 打卡 [时长] [内容]\n` +
+        `例: 打卡 30分钟 学习英语`
+      );
+    } else {
+      // 创建新用户
+      user = await prisma.user.create({
+        data: {
+          qqNumber: userId.toString(),
+          nickname: nickname
+        }
+      });
+
+      const welcomeMessages = [
+        `🎉 欢迎 ${nickname} 加入打卡！\n\n`,
+        `✨ ${nickname}，注册成功！\n\n`,
+        `👏 太棒了！${nickname} 已加入打卡大家庭！\n\n`
+      ];
+
+      sendReply(
+        ws,
+        event,
+        welcomeMessages[Math.floor(Math.random() * welcomeMessages.length)] +
+        `📝 打卡格式: 打卡 [时长] [内容]\n` +
+        `例: 打卡 30分钟 学习英语\n\n` +
+        `💸 贷款打卡: 打卡 贷款 [时长] [内容]\n\n` +
+        `📊 查看记录: 打卡记录\n` +
+        `💰 查看负债: 负债\n\n` +
+        `加油打卡，一起进步！💪`
+      );
+    }
+
+  } catch (error) {
+    console.error('注册失败:', error);
+    sendReply(ws, event, '注册失败，请稍后重试');
+  }
+}
+
 // 查询负债情况
 async function handleDebtQuery(
   ws: WebSocket,
@@ -839,6 +905,13 @@ function connectBot() {
           await handleDebtQuery(ws, event);
           break;
 
+        case '我想打卡':
+        case '注册':
+        case '加入打卡':
+        case '注册打卡':
+          await handleRegister(ws, event);
+          break;
+
         case 'ping':
           sendReply(ws, event, 'pong');
           break;
@@ -982,6 +1055,7 @@ function connectBot() {
         case '帮助':
         case 'help':
           let helpMsg = '📖 可用命令:\n\n' +
+            '我想打卡/注册 - 新人注册\n\n' +
             '打卡 [时长] [内容]\n' +
             '  例: 打卡 30分钟 学习TypeScript\n\n' +
             '💸 打卡 贷款 [时长] [内容]\n' +
