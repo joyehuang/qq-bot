@@ -998,6 +998,117 @@ async function handleCheckinStats(
   }
 }
 
+// 查看指定用户的打卡记录
+async function handleViewUserStats(
+  ws: WebSocket,
+  event: Message,
+  targetQQ: string
+): Promise<void> {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { qqNumber: targetQQ }
+    });
+
+    if (!user) {
+      sendReply(ws, event, `未找到 QQ ${targetQQ} 的打卡记录`);
+      return;
+    }
+
+    // 获取总统计
+    const totalNormal = await prisma.checkin.aggregate({
+      where: { userId: user.id, isLoan: false },
+      _sum: { duration: true },
+      _count: true
+    });
+
+    const totalLoan = await prisma.checkin.aggregate({
+      where: { userId: user.id, isLoan: true },
+      _sum: { duration: true },
+      _count: true
+    });
+
+    // 获取今日统计
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const todayNormal = await prisma.checkin.aggregate({
+      where: {
+        userId: user.id,
+        createdAt: { gte: today },
+        isLoan: false
+      },
+      _sum: { duration: true },
+      _count: true
+    });
+
+    const todayLoan = await prisma.checkin.aggregate({
+      where: {
+        userId: user.id,
+        createdAt: { gte: today },
+        isLoan: true
+      },
+      _sum: { duration: true },
+      _count: true
+    });
+
+    // 计算净时长
+    const totalNetMinutes = (totalNormal._sum.duration || 0) - (totalLoan._sum.duration || 0);
+    const todayNetMinutes = (todayNormal._sum.duration || 0) - (todayLoan._sum.duration || 0);
+    const totalCount = totalNormal._count + totalLoan._count;
+    const todayCount = todayNormal._count + todayLoan._count;
+
+    // 获取当前负债
+    const currentDebt = await getUserDebt(user.id);
+
+    // 获取最近10条记录
+    const recentCheckins = await prisma.checkin.findMany({
+      where: { userId: user.id },
+      orderBy: { createdAt: 'desc' },
+      take: 10
+    });
+
+    let message = `📊 ${user.nickname} 的打卡记录\n\n`;
+
+    // 显示今日净时长
+    if (todayNetMinutes >= 0) {
+      message += `今日: ${formatDuration(todayNetMinutes)} (${todayCount}次)\n`;
+    } else {
+      message += `今日: -${formatDuration(Math.abs(todayNetMinutes))} (${todayCount}次)\n`;
+    }
+
+    // 显示累计净时长
+    if (totalNetMinutes >= 0) {
+      message += `累计: ${formatDuration(totalNetMinutes)} (${totalCount}次)\n`;
+    } else {
+      message += `累计: -${formatDuration(Math.abs(totalNetMinutes))} (${totalCount}次)\n`;
+    }
+
+    // 显示连续打卡
+    if (user.streakDays > 0) {
+      message += `🔥 连续打卡: ${user.streakDays}天\n`;
+    }
+
+    // 显示负债信息
+    if (currentDebt > 0) {
+      message += `💸 当前负债: ${formatDuration(currentDebt)}\n`;
+    }
+
+    message += `\n📝 最近记录:\n`;
+
+    recentCheckins.forEach((c: Checkin, i: number) => {
+      const date = c.createdAt.toLocaleDateString('zh-CN');
+      const loanMark = c.isLoan ? ' 💸' : '';
+      message += `${i + 1}. ${date} - ${c.duration}分钟 - ${c.content}${loanMark}\n`;
+    });
+
+    sendReply(ws, event, message);
+
+  } catch (error) {
+    console.error('查询用户记录失败:', error);
+    sendReply(ws, event, '查询失败，请稍后重试');
+  }
+}
+
 // 处理排行榜查询
 async function handleRanking(
   ws: WebSocket,
@@ -1877,6 +1988,34 @@ function connectBot() {
           await handleCheckinStats(ws, event);
           break;
 
+        case '查看打卡':
+        case 'ta的打卡':
+        case '他的打卡':
+        case '她的打卡':
+          {
+            // 支持 @某人 或直接输入 QQ 号
+            const argStr = args.join(' ');
+            // 匹配 CQ 码中的 QQ 号
+            const atMatch = argStr.match(/\[CQ:at,qq=(\d+)\]/);
+            // 匹配纯数字 QQ 号
+            const qqMatch = argStr.match(/(\d{5,12})/);
+
+            let targetQQ = '';
+            if (atMatch) {
+              targetQQ = atMatch[1];
+            } else if (qqMatch) {
+              targetQQ = qqMatch[1];
+            }
+
+            if (!targetQQ) {
+              sendReply(ws, event, '请指定要查看的用户\n用法: 查看打卡 @某人\n或: 查看打卡 QQ号');
+              break;
+            }
+
+            await handleViewUserStats(ws, event, targetQQ);
+          }
+          break;
+
         case '负债':
         case '我的负债':
         case '欠款':
@@ -2113,6 +2252,7 @@ function connectBot() {
             '💸 打卡 贷款 [时长] [内容]\n' +
             '  (正常打卡可抵消贷款)\n\n' +
             '📊 打卡记录 - 查看统计(含AI分析)\n' +
+            '👀 查看打卡 @某人 - 查看他人记录\n' +
             '📅 周报 - 本周报告(含AI总结)\n' +
             '💰 负债/欠款 - 查看贷款负债\n' +
             '🎯 设置目标 [时长] - 每日目标\n' +
