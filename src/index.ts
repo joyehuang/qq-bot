@@ -141,7 +141,8 @@ const BOT_INFO = {
     '💸 打卡 贷款 [时长] [内容] - 贷款打卡',
     '📊 打卡记录 - 查看统计',
     '💰 负债 - 查看贷款负债',
-    '💡 建议 [内容] - 提交功能建议',
+    '🏆 今日排行/周榜/总榜 - 排行榜',
+    '📈 群统计 - 查看群数据',
     '❓ 帮助 - 查看所有命令'
   ]
 };
@@ -259,6 +260,76 @@ function formatDuration(minutes: number): string {
   return `${mins}分钟`;
 }
 
+// 获取今天的日期（0点）
+function getTodayStart(): Date {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return today;
+}
+
+// 获取本周一的日期（0点）
+function getWeekStart(): Date {
+  const today = new Date();
+  const day = today.getDay();
+  const diff = today.getDate() - day + (day === 0 ? -6 : 1); // 调整到周一
+  const monday = new Date(today.setDate(diff));
+  monday.setHours(0, 0, 0, 0);
+  return monday;
+}
+
+// 更新连续打卡天数
+async function updateStreak(userId: number): Promise<{ streakDays: number; maxStreak: number; isNewStreak: boolean }> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId }
+  });
+
+  if (!user) {
+    return { streakDays: 0, maxStreak: 0, isNewStreak: false };
+  }
+
+  const today = getTodayStart();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  let newStreakDays = user.streakDays;
+  let isNewStreak = false;
+
+  if (!user.lastCheckinDate) {
+    // 首次打卡
+    newStreakDays = 1;
+    isNewStreak = true;
+  } else {
+    const lastDate = new Date(user.lastCheckinDate);
+    lastDate.setHours(0, 0, 0, 0);
+
+    if (lastDate.getTime() === today.getTime()) {
+      // 今天已打卡，不更新连续天数
+      return { streakDays: user.streakDays, maxStreak: user.maxStreak, isNewStreak: false };
+    } else if (lastDate.getTime() === yesterday.getTime()) {
+      // 昨天打卡了，连续+1
+      newStreakDays = user.streakDays + 1;
+      isNewStreak = true;
+    } else {
+      // 断签了，重新开始
+      newStreakDays = 1;
+      isNewStreak = true;
+    }
+  }
+
+  const newMaxStreak = Math.max(user.maxStreak, newStreakDays);
+
+  await prisma.user.update({
+    where: { id: userId },
+    data: {
+      streakDays: newStreakDays,
+      maxStreak: newMaxStreak,
+      lastCheckinDate: today
+    }
+  });
+
+  return { streakDays: newStreakDays, maxStreak: newMaxStreak, isNewStreak };
+}
+
 // 计算用户当前贷款总额
 async function getUserDebt(userId: number): Promise<number> {
   // 获取所有贷款打卡的总时长
@@ -364,6 +435,12 @@ async function handleCheckin(
     // 获取打卡后的负债
     const debtAfter = await getUserDebt(user.id);
 
+    // 更新连续打卡天数（只有正常打卡才算）
+    let streakInfo = { streakDays: 0, maxStreak: 0, isNewStreak: false };
+    if (!isLoan) {
+      streakInfo = await updateStreak(user.id);
+    }
+
     // 获取今日打卡统计（只统计正常打卡）
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -425,13 +502,22 @@ async function handleCheckin(
 
         if (debtAfter > 0) {
           replyMsg += `📊 剩余负债: ${formatDuration(debtAfter)}\n`;
-          replyMsg += `🎯 继续加油，争取早日还清！`;
         } else {
           replyMsg += `🎉 恭喜！你已还清所有贷款！\n`;
-          replyMsg += `📊 今日累计: ${formatDuration(todayMinutes)} (${todayStats._count}次)`;
         }
-      } else {
-        replyMsg += `📊 今日累计: ${formatDuration(todayMinutes)} (${todayStats._count}次)`;
+      }
+
+      replyMsg += `📊 今日累计: ${formatDuration(todayMinutes)} (${todayStats._count}次)\n`;
+
+      // 显示连续打卡信息
+      if (streakInfo.streakDays > 0) {
+        if (streakInfo.isNewStreak && streakInfo.streakDays === 1) {
+          replyMsg += `🔥 开始新的连续打卡！`;
+        } else if (streakInfo.streakDays >= 7) {
+          replyMsg += `🔥 连续打卡 ${streakInfo.streakDays} 天！太强了！`;
+        } else {
+          replyMsg += `🔥 连续打卡 ${streakInfo.streakDays} 天`;
+        }
       }
 
       sendReply(ws, event, replyMsg);
@@ -515,6 +601,167 @@ async function handleCheckinStats(
 
   } catch (error) {
     console.error('查询失败:', error);
+    sendReply(ws, event, '查询失败，请稍后重试');
+  }
+}
+
+// 处理排行榜查询
+async function handleRanking(
+  ws: WebSocket,
+  event: Message,
+  type: 'today' | 'week' | 'total'
+): Promise<void> {
+  const groupId = event.group_id?.toString() || 'private';
+
+  try {
+    let startDate: Date | undefined;
+    let title: string;
+
+    if (type === 'today') {
+      startDate = getTodayStart();
+      title = '📊 今日打卡排行榜';
+    } else if (type === 'week') {
+      startDate = getWeekStart();
+      title = '📊 本周打卡排行榜';
+    } else {
+      title = '📊 总打卡排行榜';
+    }
+
+    // 查询排行数据（只统计正常打卡）
+    const rankings = await prisma.checkin.groupBy({
+      by: ['userId'],
+      where: {
+        groupId,
+        isLoan: false,
+        ...(startDate ? { createdAt: { gte: startDate } } : {})
+      },
+      _sum: { duration: true },
+      _count: true,
+      orderBy: { _sum: { duration: 'desc' } },
+      take: 10
+    });
+
+    if (rankings.length === 0) {
+      const emptyMsg = type === 'today'
+        ? '今天还没有人打卡哦，快来争第一！'
+        : type === 'week'
+        ? '本周还没有人打卡哦，快来开启新的一周！'
+        : '还没有打卡记录，快来创造历史！';
+      sendReply(ws, event, emptyMsg);
+      return;
+    }
+
+    // 获取用户信息
+    const userIds = rankings.map(r => r.userId);
+    const users = await prisma.user.findMany({
+      where: { id: { in: userIds } }
+    });
+    const userMap = new Map(users.map(u => [u.id, u]));
+
+    // 构建排行榜消息
+    let message = `${title}\n\n`;
+    const medals = ['🥇', '🥈', '🥉'];
+
+    rankings.forEach((r, i) => {
+      const user = userMap.get(r.userId);
+      const nickname = user?.nickname || '未知用户';
+      const duration = r._sum.duration || 0;
+      const count = r._count;
+      const medal = i < 3 ? medals[i] : `${i + 1}.`;
+
+      message += `${medal} ${nickname}\n`;
+      message += `   ${formatDuration(duration)} (${count}次)\n`;
+    });
+
+    sendReply(ws, event, message);
+
+  } catch (error) {
+    console.error('查询排行榜失败:', error);
+    sendReply(ws, event, '查询排行榜失败，请稍后重试');
+  }
+}
+
+// 处理群统计查询
+async function handleGroupStats(
+  ws: WebSocket,
+  event: Message
+): Promise<void> {
+  const groupId = event.group_id?.toString() || 'private';
+
+  if (groupId === 'private') {
+    sendReply(ws, event, '群统计功能只能在群里使用哦～');
+    return;
+  }
+
+  try {
+    const today = getTodayStart();
+
+    // 今日打卡统计
+    const todayStats = await prisma.checkin.aggregate({
+      where: {
+        groupId,
+        createdAt: { gte: today },
+        isLoan: false
+      },
+      _sum: { duration: true },
+      _count: true
+    });
+
+    // 今日打卡人数
+    const todayUsers = await prisma.checkin.groupBy({
+      by: ['userId'],
+      where: {
+        groupId,
+        createdAt: { gte: today },
+        isLoan: false
+      }
+    });
+
+    // 群内注册总人数
+    const totalUsers = await prisma.user.count({
+      where: {
+        checkins: {
+          some: { groupId }
+        }
+      }
+    });
+
+    // 本周统计
+    const weekStart = getWeekStart();
+    const weekStats = await prisma.checkin.aggregate({
+      where: {
+        groupId,
+        createdAt: { gte: weekStart },
+        isLoan: false
+      },
+      _sum: { duration: true },
+      _count: true
+    });
+
+    const todayMinutes = todayStats._sum.duration || 0;
+    const todayCount = todayStats._count;
+    const todayUserCount = todayUsers.length;
+    const weekMinutes = weekStats._sum.duration || 0;
+    const weekCount = weekStats._count;
+
+    // 计算打卡率
+    const checkinRate = totalUsers > 0
+      ? Math.round((todayUserCount / totalUsers) * 100)
+      : 0;
+
+    let message = `📊 群打卡统计\n\n`;
+    message += `📅 今日\n`;
+    message += `├ 打卡人数: ${todayUserCount}/${totalUsers}人 (${checkinRate}%)\n`;
+    message += `├ 打卡次数: ${todayCount}次\n`;
+    message += `└ 总时长: ${formatDuration(todayMinutes)}\n\n`;
+    message += `📅 本周\n`;
+    message += `├ 打卡次数: ${weekCount}次\n`;
+    message += `└ 总时长: ${formatDuration(weekMinutes)}`;
+
+    sendReply(ws, event, message);
+
+  } catch (error) {
+    console.error('查询群统计失败:', error);
     sendReply(ws, event, '查询失败，请稍后重试');
   }
 }
@@ -912,6 +1159,30 @@ function connectBot() {
           await handleRegister(ws, event);
           break;
 
+        case '今日排行':
+        case '今日榜':
+        case '日榜':
+          await handleRanking(ws, event, 'today');
+          break;
+
+        case '本周排行':
+        case '周排行':
+        case '周榜':
+          await handleRanking(ws, event, 'week');
+          break;
+
+        case '总排行':
+        case '排行榜':
+        case '总榜':
+          await handleRanking(ws, event, 'total');
+          break;
+
+        case '群统计':
+        case '群数据':
+        case '今日统计':
+          await handleGroupStats(ws, event);
+          break;
+
         case 'ping':
           sendReply(ws, event, 'pong');
           break;
@@ -1055,17 +1326,17 @@ function connectBot() {
         case '帮助':
         case 'help':
           let helpMsg = '📖 可用命令:\n\n' +
-            '我想打卡/注册 - 新人注册\n\n' +
-            '打卡 [时长] [内容]\n' +
+            '🆕 我想打卡/注册 - 新人注册\n\n' +
+            '📝 打卡 [时长] [内容]\n' +
             '  例: 打卡 30分钟 学习TypeScript\n\n' +
             '💸 打卡 贷款 [时长] [内容]\n' +
-            '  例: 打卡 贷款 1小时 学习\n' +
             '  (正常打卡可抵消贷款)\n\n' +
-            '打卡记录 - 查看打卡统计\n\n' +
-            '负债/欠款 - 查看贷款负债\n\n' +
-            'github/代码 - 查看今日GitHub提交\n\n' +
-            '建议 [内容] - 提交功能建议\n\n' +
-            'ping - 测试机器人';
+            '📊 打卡记录 - 查看个人统计\n' +
+            '💰 负债/欠款 - 查看贷款负债\n\n' +
+            '🏆 今日排行/周榜/总榜 - 排行榜\n' +
+            '📈 群统计 - 查看群整体数据\n\n' +
+            '💻 github/代码 - 查看GitHub提交\n' +
+            '💡 建议 [内容] - 提交功能建议';
 
           if (isAdmin) {
             helpMsg += '\n\n👑 管理员命令:\n' +

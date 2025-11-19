@@ -13,12 +13,15 @@ datasource db {
 
 // 用户表
 model User {
-  id        Int       @id @default(autoincrement())
-  qqNumber  String    @unique @map("qq_number")
-  nickname  String
-  createdAt DateTime  @default(now()) @map("created_at")
-  updatedAt DateTime  @updatedAt @map("updated_at")
-  checkins  Checkin[]
+  id              Int       @id @default(autoincrement())
+  qqNumber        String    @unique @map("qq_number")
+  nickname        String
+  streakDays      Int       @default(0) @map("streak_days")      // 当前连续打卡天数
+  maxStreak       Int       @default(0) @map("max_streak")       // 历史最长连续天数
+  lastCheckinDate DateTime? @map("last_checkin_date")            // 最后打卡日期
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  checkins        Checkin[]
 
   @@map("users")
 }
