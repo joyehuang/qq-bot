@@ -57,6 +57,17 @@ function getGoalAchievedMessage(): string {
 const WS_URL = process.env.WS_URL || 'ws://localhost:6100';
 const prisma = new PrismaClient();
 
+// 版本信息
+const VERSION = 'v1.0.0';
+const VERSION_FEATURES = [
+  '打卡记录与贷款打卡',
+  '排行榜（今日/本周/总榜）',
+  '成就系统（10种成就）',
+  '每日目标设置',
+  'AI 个性化分析',
+  '周报功能'
+];
+
 // AI 配置
 const AI_API_URL = 'https://api.siliconflow.cn/v1/chat/completions';
 const AI_API_KEY = process.env.AI_API_KEY || '';
@@ -1997,6 +2008,37 @@ function connectBot() {
           }
           break;
 
+        case '发布更新':
+        case '版本更新':
+        case '更新通知':
+          if (!isSuperAdmin) {
+            sendReply(ws, event, '只有超级管理员才能发布更新通知');
+            break;
+          }
+          if (!REMINDER_GROUP_ID) {
+            sendReply(ws, event, '未配置群号（REMINDER_GROUP_ID）');
+            break;
+          }
+          {
+            // 如果有自定义内容，使用自定义内容；否则使用默认功能列表
+            const customContent = args.join(' ').trim();
+            let updateMsg = `🎉 机器人已更新到 ${VERSION}！\n\n`;
+
+            if (customContent) {
+              updateMsg += `📝 更新内容：\n${customContent}`;
+            } else {
+              updateMsg += `✨ 主要功能：\n`;
+              VERSION_FEATURES.forEach(feature => {
+                updateMsg += `• ${feature}\n`;
+              });
+              updateMsg += `\n发送「帮助」查看所有命令～`;
+            }
+
+            sendGroupMessage(ws, REMINDER_GROUP_ID, updateMsg);
+            sendReply(ws, event, '📢 更新通知已发送到群！');
+          }
+          break;
+
         case '建议':
         case '反馈':
         case '新功能':
@@ -2091,7 +2133,8 @@ function connectBot() {
             helpMsg += '\n\n⭐ 超管命令:\n' +
               '添加管理 [QQ] - 添加管理员\n' +
               '删除管理 [QQ] - 删除管理员\n' +
-              '督促 - 测试打卡督促';
+              '督促 - 测试打卡督促\n' +
+              '发布更新 [内容] - 发送版本更新通知';
           }
 
           sendReply(ws, event, helpMsg);
