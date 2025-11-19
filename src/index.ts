@@ -384,14 +384,9 @@ async function checkAchievements(
 
   // 只有正常打卡才检查大部分成就
   if (!isLoan) {
-    // 首次打卡
-    const checkinCount = await prisma.checkin.count({
-      where: { userId, isLoan: false }
-    });
-    if (checkinCount === 1) {
-      if (await grantAchievement(userId, 'first_checkin')) {
-        newAchievements.push('first_checkin');
-      }
+    // 首次打卡成就 - 只要有正常打卡记录就应该有这个成就
+    if (await grantAchievement(userId, 'first_checkin')) {
+      newAchievements.push('first_checkin');
     }
 
     // 连续打卡成就
