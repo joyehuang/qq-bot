@@ -57,6 +57,156 @@ function getGoalAchievedMessage(): string {
 const WS_URL = process.env.WS_URL || 'ws://localhost:6100';
 const prisma = new PrismaClient();
 
+// AI 配置
+const AI_API_URL = 'https://api.siliconflow.cn/v1/chat/completions';
+const AI_API_KEY = process.env.AI_API_KEY || '';
+const AI_MODEL = process.env.AI_MODEL || 'Qwen/Qwen2.5-7B-Instruct';
+
+// AI 调用函数
+async function callAI(systemPrompt: string, userPrompt: string): Promise<string | null> {
+  if (!AI_API_KEY) {
+    return null;
+  }
+
+  try {
+    const response = await fetch(AI_API_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${AI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: AI_MODEL,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        max_tokens: 200,
+        temperature: 0.7
+      })
+    });
+
+    if (!response.ok) {
+      console.error('AI API 错误:', response.status);
+      return null;
+    }
+
+    const data = await response.json() as any;
+    return data.choices?.[0]?.message?.content || null;
+  } catch (error) {
+    console.error('AI 调用失败:', error);
+    return null;
+  }
+}
+
+// 获取用户打卡分析数据
+async function getUserAnalyticsData(userId: number) {
+  const today = getTodayStart();
+  const weekStart = getWeekStart();
+  const lastWeekStart = new Date(weekStart);
+  lastWeekStart.setDate(lastWeekStart.getDate() - 7);
+
+  // 本周打卡
+  const weekCheckins = await prisma.checkin.findMany({
+    where: {
+      userId,
+      createdAt: { gte: weekStart },
+      isLoan: false
+    },
+    orderBy: { createdAt: 'desc' }
+  });
+
+  // 上周打卡
+  const lastWeekCheckins = await prisma.checkin.findMany({
+    where: {
+      userId,
+      createdAt: { gte: lastWeekStart, lt: weekStart },
+      isLoan: false
+    }
+  });
+
+  // 所有打卡（用于分析常见内容和时段）
+  const allCheckins = await prisma.checkin.findMany({
+    where: { userId, isLoan: false },
+    orderBy: { createdAt: 'desc' },
+    take: 50 // 最近50条
+  });
+
+  // 计算统计
+  const weekMinutes = weekCheckins.reduce((sum, c) => sum + c.duration, 0);
+  const lastWeekMinutes = lastWeekCheckins.reduce((sum, c) => sum + c.duration, 0);
+
+  // 分析常见内容（提取关键词）
+  const contentCounts: Record<string, number> = {};
+  allCheckins.forEach(c => {
+    const content = c.content.trim();
+    contentCounts[content] = (contentCounts[content] || 0) + c.duration;
+  });
+  const topContents = Object.entries(contentCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([content, minutes]) => `${content}(${formatDuration(minutes)})`);
+
+  // 分析常见打卡时段
+  const hourCounts: Record<number, number> = {};
+  allCheckins.forEach(c => {
+    const hour = c.createdAt.getHours();
+    hourCounts[hour] = (hourCounts[hour] || 0) + 1;
+  });
+  const topHours = Object.entries(hourCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 2)
+    .map(([hour]) => `${hour}点`);
+
+  // 获取用户信息
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+
+  return {
+    weekMinutes,
+    weekCount: weekCheckins.length,
+    lastWeekMinutes,
+    lastWeekCount: lastWeekCheckins.length,
+    streakDays: user?.streakDays || 0,
+    maxStreak: user?.maxStreak || 0,
+    topContents,
+    topHours,
+    recentCheckins: weekCheckins.slice(0, 5).map(c => ({
+      content: c.content,
+      duration: c.duration,
+      date: c.createdAt.toLocaleDateString('zh-CN')
+    }))
+  };
+}
+
+// 生成AI分析
+async function generateAIAnalysis(userId: number, nickname: string): Promise<string | null> {
+  const data = await getUserAnalyticsData(userId);
+
+  // 如果数据太少，不生成分析
+  if (data.weekCount < 2 && data.lastWeekCount < 2) {
+    return null;
+  }
+
+  const systemPrompt = `你是一个打卡机器人的AI助手，负责分析用户的打卡数据并给出个性化的洞察和建议。
+要求：
+- 用简短、温暖、有趣的语气
+- 2-3句话，不超过80字
+- 要基于数据给出具体的观察
+- 可以适当调侃但要友善
+- 不要用"您"，用"你"`;
+
+  const userPrompt = `用户「${nickname}」的打卡数据：
+- 本周：${formatDuration(data.weekMinutes)}，${data.weekCount}次打卡
+- 上周：${formatDuration(data.lastWeekMinutes)}，${data.lastWeekCount}次打卡
+- 连续打卡：${data.streakDays}天（历史最长${data.maxStreak}天）
+- 常打卡内容：${data.topContents.join('、') || '暂无'}
+- 常打卡时段：${data.topHours.join('、') || '暂无'}
+
+请给出个性化分析和建议。`;
+
+  return await callAI(systemPrompt, userPrompt);
+}
+
 // 超级管理员QQ号（从环境变量读取，不可被删除）
 const SUPER_ADMIN_QQ = process.env.ADMIN_QQ || '';
 
@@ -191,10 +341,11 @@ const BOT_INFO = {
     '🆕 我想打卡 - 新人注册',
     '📝 打卡 [时长] [内容] - 记录打卡',
     '💸 打卡 贷款 [时长] [内容] - 贷款打卡',
-    '📊 打卡记录 - 查看统计',
+    '📊 打卡记录 - 查看统计(含AI分析)',
+    '📅 周报 - 本周报告(含AI总结)',
     '💰 负债 - 查看贷款负债',
     '🎯 设置目标 [时长] - 每日目标',
-    '🏆 今日排行/周榜/总榜 - 排行榜',
+    '🏆 排行榜 - 今日/周/总榜',
     '🎖️ 成就 - 查看成就',
     '❓ 帮助 - 查看所有命令'
   ]
@@ -822,6 +973,12 @@ async function handleCheckinStats(
       message += `${i + 1}. ${date} - ${c.duration}分钟 - ${c.content}${loanMark}\n`;
     });
 
+    // 生成 AI 分析
+    const aiAnalysis = await generateAIAnalysis(user.id, user.nickname);
+    if (aiAnalysis) {
+      message += `\n🤖 AI 小结:\n${aiAnalysis}`;
+    }
+
     sendReply(ws, event, message);
 
   } catch (error) {
@@ -1152,6 +1309,115 @@ async function handleAchievements(
     console.error('查询成就失败:', error);
     sendReply(ws, event, '查询失败，请稍后重试');
   }
+}
+
+// 生成周报
+async function handleWeeklyReport(
+  ws: WebSocket,
+  event: Message
+): Promise<void> {
+  const userId = event.user_id!;
+
+  try {
+    const user = await prisma.user.findUnique({
+      where: { qqNumber: userId.toString() }
+    });
+
+    if (!user) {
+      sendReply(ws, event, '你还没有打卡记录哦，快来打卡吧！');
+      return;
+    }
+
+    const data = await getUserAnalyticsData(user.id);
+
+    // 计算变化
+    const minutesDiff = data.weekMinutes - data.lastWeekMinutes;
+    const countDiff = data.weekCount - data.lastWeekCount;
+    const percentChange = data.lastWeekMinutes > 0
+      ? Math.round((minutesDiff / data.lastWeekMinutes) * 100)
+      : (data.weekMinutes > 0 ? 100 : 0);
+
+    let message = `📅 ${user.nickname} 的周报\n\n`;
+
+    // 本周统计
+    message += `📊 本周统计\n`;
+    message += `├ 打卡时长: ${formatDuration(data.weekMinutes)}\n`;
+    message += `├ 打卡次数: ${data.weekCount}次\n`;
+    message += `└ 连续天数: ${data.streakDays}天\n\n`;
+
+    // 与上周对比
+    message += `📈 对比上周\n`;
+    if (minutesDiff > 0) {
+      message += `├ 时长: +${formatDuration(minutesDiff)} (↑${percentChange}%)\n`;
+    } else if (minutesDiff < 0) {
+      message += `├ 时长: -${formatDuration(Math.abs(minutesDiff))} (↓${Math.abs(percentChange)}%)\n`;
+    } else {
+      message += `├ 时长: 持平\n`;
+    }
+
+    if (countDiff > 0) {
+      message += `└ 次数: +${countDiff}次\n`;
+    } else if (countDiff < 0) {
+      message += `└ 次数: ${countDiff}次\n`;
+    } else {
+      message += `└ 次数: 持平\n`;
+    }
+
+    // 常打卡内容
+    if (data.topContents.length > 0) {
+      message += `\n🎯 主要内容\n`;
+      data.topContents.forEach((content, i) => {
+        message += `${i + 1}. ${content}\n`;
+      });
+    }
+
+    // AI 总结
+    const aiSummary = await generateWeeklyAISummary(user.id, user.nickname, data);
+    if (aiSummary) {
+      message += `\n🤖 AI 总结:\n${aiSummary}`;
+    }
+
+    sendReply(ws, event, message);
+
+  } catch (error) {
+    console.error('生成周报失败:', error);
+    sendReply(ws, event, '生成周报失败，请稍后重试');
+  }
+}
+
+// 生成周报AI总结
+async function generateWeeklyAISummary(
+  userId: number,
+  nickname: string,
+  data: Awaited<ReturnType<typeof getUserAnalyticsData>>
+): Promise<string | null> {
+  if (data.weekCount < 1) {
+    return null;
+  }
+
+  const minutesDiff = data.weekMinutes - data.lastWeekMinutes;
+  const percentChange = data.lastWeekMinutes > 0
+    ? Math.round((minutesDiff / data.lastWeekMinutes) * 100)
+    : 0;
+
+  const systemPrompt = `你是一个打卡机器人的AI助手，负责生成用户的周报总结。
+要求：
+- 用简短、温暖、有趣的语气
+- 3-4句话，不超过100字
+- 要基于数据变化给出具体评价
+- 给出下周的建议或鼓励
+- 可以适当调侃但要友善`;
+
+  const userPrompt = `用户「${nickname}」的周报数据：
+- 本周：${formatDuration(data.weekMinutes)}，${data.weekCount}次
+- 上周：${formatDuration(data.lastWeekMinutes)}，${data.lastWeekCount}次
+- 变化：${percentChange > 0 ? '+' : ''}${percentChange}%
+- 连续打卡：${data.streakDays}天
+- 本周主要内容：${data.topContents.join('、') || '暂无'}
+
+请生成周报总结和下周建议。`;
+
+  return await callAI(systemPrompt, userPrompt);
 }
 
 // 设置每日目标
@@ -1650,6 +1916,12 @@ function connectBot() {
           await handleSetGoal(ws, event, args);
           break;
 
+        case '周报':
+        case '本周报告':
+        case '我的周报':
+          await handleWeeklyReport(ws, event);
+          break;
+
         case 'ping':
           sendReply(ws, event, 'pong');
           break;
@@ -1798,7 +2070,8 @@ function connectBot() {
             '  例: 打卡 30分钟 学习TypeScript\n\n' +
             '💸 打卡 贷款 [时长] [内容]\n' +
             '  (正常打卡可抵消贷款)\n\n' +
-            '📊 打卡记录 - 查看个人统计\n' +
+            '📊 打卡记录 - 查看统计(含AI分析)\n' +
+            '📅 周报 - 本周报告(含AI总结)\n' +
             '💰 负债/欠款 - 查看贷款负债\n' +
             '🎯 设置目标 [时长] - 每日目标\n' +
             '🎖️ 成就 - 查看成就列表\n\n' +
