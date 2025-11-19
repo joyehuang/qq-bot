@@ -1,6 +1,20 @@
 import "dotenv/config";
 import WebSocket from 'ws';
-import { PrismaClient, Checkin, Suggestion } from './generated/prisma/client';
+import { PrismaClient, Checkin, Suggestion, Achievement } from './generated/prisma/client';
+
+// 成就定义
+const ACHIEVEMENTS: Record<string, { name: string; description: string; icon: string }> = {
+  'first_checkin': { name: '初来乍到', description: '完成首次打卡', icon: '🎯' },
+  'streak_3': { name: '小试牛刀', description: '连续打卡3天', icon: '🔥' },
+  'streak_7': { name: '持之以恒', description: '连续打卡7天', icon: '💪' },
+  'streak_30': { name: '打卡狂人', description: '连续打卡30天', icon: '🏆' },
+  'total_1h': { name: '崭露头角', description: '累计打卡1小时', icon: '⭐' },
+  'total_10h': { name: '初具规模', description: '累计打卡10小时', icon: '🌟' },
+  'total_100h': { name: '百炼成钢', description: '累计打卡100小时', icon: '💎' },
+  'debt_free': { name: '信用良好', description: '还清所有贷款负债', icon: '✨' },
+  'early_bird': { name: '早起鸟儿', description: '早上6-8点打卡', icon: '🌅' },
+  'night_owl': { name: '夜猫子', description: '晚上22-24点打卡', icon: '🌙' }
+};
 
 const WS_URL = process.env.WS_URL || 'ws://localhost:6100';
 const prisma = new PrismaClient();
@@ -143,6 +157,7 @@ const BOT_INFO = {
     '💰 负债 - 查看贷款负债',
     '🏆 今日排行/周榜/总榜 - 排行榜',
     '📈 群统计 - 查看群数据',
+    '🎖️ 成就 - 查看成就',
     '❓ 帮助 - 查看所有命令'
   ]
 };
@@ -330,6 +345,101 @@ async function updateStreak(userId: number): Promise<{ streakDays: number; maxSt
   return { streakDays: newStreakDays, maxStreak: newMaxStreak, isNewStreak };
 }
 
+// 授予成就
+async function grantAchievement(userId: number, achievementId: string): Promise<boolean> {
+  try {
+    // 检查是否已获得该成就
+    const existing = await prisma.achievement.findUnique({
+      where: {
+        userId_achievementId: { userId, achievementId }
+      }
+    });
+
+    if (existing) {
+      return false; // 已有成就
+    }
+
+    // 授予成就
+    await prisma.achievement.create({
+      data: { userId, achievementId }
+    });
+
+    return true; // 新获得成就
+  } catch (error) {
+    console.error('授予成就失败:', error);
+    return false;
+  }
+}
+
+// 检查并授予成就
+async function checkAchievements(
+  userId: number,
+  streakDays: number,
+  totalMinutes: number,
+  currentDebt: number,
+  previousDebt: number,
+  isLoan: boolean
+): Promise<string[]> {
+  const newAchievements: string[] = [];
+
+  // 只有正常打卡才检查大部分成就
+  if (!isLoan) {
+    // 首次打卡
+    const checkinCount = await prisma.checkin.count({
+      where: { userId, isLoan: false }
+    });
+    if (checkinCount === 1) {
+      if (await grantAchievement(userId, 'first_checkin')) {
+        newAchievements.push('first_checkin');
+      }
+    }
+
+    // 连续打卡成就
+    if (streakDays >= 3 && await grantAchievement(userId, 'streak_3')) {
+      newAchievements.push('streak_3');
+    }
+    if (streakDays >= 7 && await grantAchievement(userId, 'streak_7')) {
+      newAchievements.push('streak_7');
+    }
+    if (streakDays >= 30 && await grantAchievement(userId, 'streak_30')) {
+      newAchievements.push('streak_30');
+    }
+
+    // 累计时长成就
+    if (totalMinutes >= 60 && await grantAchievement(userId, 'total_1h')) {
+      newAchievements.push('total_1h');
+    }
+    if (totalMinutes >= 600 && await grantAchievement(userId, 'total_10h')) {
+      newAchievements.push('total_10h');
+    }
+    if (totalMinutes >= 6000 && await grantAchievement(userId, 'total_100h')) {
+      newAchievements.push('total_100h');
+    }
+
+    // 还清负债成就
+    if (previousDebt > 0 && currentDebt === 0) {
+      if (await grantAchievement(userId, 'debt_free')) {
+        newAchievements.push('debt_free');
+      }
+    }
+
+    // 时间段成就
+    const hour = new Date().getHours();
+    if (hour >= 6 && hour < 8) {
+      if (await grantAchievement(userId, 'early_bird')) {
+        newAchievements.push('early_bird');
+      }
+    }
+    if (hour >= 22 && hour <= 23) {
+      if (await grantAchievement(userId, 'night_owl')) {
+        newAchievements.push('night_owl');
+      }
+    }
+  }
+
+  return newAchievements;
+}
+
 // 计算用户当前贷款总额
 async function getUserDebt(userId: number): Promise<number> {
   // 获取所有贷款打卡的总时长
@@ -457,6 +567,23 @@ async function handleCheckin(
 
     const todayMinutes = todayStats._sum.duration || 0;
 
+    // 获取累计正常打卡时长（用于成就检查）
+    const totalNormalStats = await prisma.checkin.aggregate({
+      where: { userId: user.id, isLoan: false },
+      _sum: { duration: true }
+    });
+    const totalNormalMinutes = totalNormalStats._sum.duration || 0;
+
+    // 检查成就
+    const newAchievements = await checkAchievements(
+      user.id,
+      streakInfo.streakDays,
+      totalNormalMinutes,
+      debtAfter,
+      debtBefore,
+      isLoan
+    );
+
     if (isLoan) {
       // 贷款打卡的回复
       const loanMessages = [
@@ -517,6 +644,17 @@ async function handleCheckin(
           replyMsg += `🔥 连续打卡 ${streakInfo.streakDays} 天！太强了！`;
         } else {
           replyMsg += `🔥 连续打卡 ${streakInfo.streakDays} 天`;
+        }
+      }
+
+      // 显示新获得的成就
+      if (newAchievements.length > 0) {
+        replyMsg += `\n\n🏆 解锁成就：`;
+        for (const achId of newAchievements) {
+          const ach = ACHIEVEMENTS[achId];
+          if (ach) {
+            replyMsg += `\n${ach.icon} ${ach.name} - ${ach.description}`;
+          }
         }
       }
 
@@ -859,6 +997,68 @@ async function handleGroupStats(
 
   } catch (error) {
     console.error('查询群统计失败:', error);
+    sendReply(ws, event, '查询失败，请稍后重试');
+  }
+}
+
+// 查看成就
+async function handleAchievements(
+  ws: WebSocket,
+  event: Message
+): Promise<void> {
+  const userId = event.user_id!;
+
+  try {
+    const user = await prisma.user.findUnique({
+      where: { qqNumber: userId.toString() }
+    });
+
+    if (!user) {
+      sendReply(ws, event, '你还没有打卡记录哦，快来打卡吧！');
+      return;
+    }
+
+    // 获取用户已解锁的成就
+    const userAchievements = await prisma.achievement.findMany({
+      where: { userId: user.id },
+      orderBy: { unlockedAt: 'desc' }
+    });
+
+    const totalAchievements = Object.keys(ACHIEVEMENTS).length;
+    const unlockedCount = userAchievements.length;
+
+    let message = `🏆 ${user.nickname} 的成就\n\n`;
+    message += `已解锁: ${unlockedCount}/${totalAchievements}\n\n`;
+
+    if (unlockedCount === 0) {
+      message += `还没有解锁任何成就哦～\n快去打卡获得你的第一个成就吧！`;
+    } else {
+      message += `✨ 已解锁:\n`;
+      for (const ua of userAchievements) {
+        const ach = ACHIEVEMENTS[ua.achievementId];
+        if (ach) {
+          const date = ua.unlockedAt.toLocaleDateString('zh-CN');
+          message += `${ach.icon} ${ach.name}\n   ${ach.description} (${date})\n`;
+        }
+      }
+
+      // 显示未解锁的成就
+      const unlockedIds = new Set(userAchievements.map(ua => ua.achievementId));
+      const lockedAchievements = Object.entries(ACHIEVEMENTS)
+        .filter(([id]) => !unlockedIds.has(id));
+
+      if (lockedAchievements.length > 0) {
+        message += `\n🔒 未解锁:\n`;
+        for (const [id, ach] of lockedAchievements) {
+          message += `${ach.icon} ${ach.name} - ${ach.description}\n`;
+        }
+      }
+    }
+
+    sendReply(ws, event, message);
+
+  } catch (error) {
+    console.error('查询成就失败:', error);
     sendReply(ws, event, '查询失败，请稍后重试');
   }
 }
@@ -1280,6 +1480,12 @@ function connectBot() {
           await handleGroupStats(ws, event);
           break;
 
+        case '成就':
+        case '我的成就':
+        case '成就列表':
+          await handleAchievements(ws, event);
+          break;
+
         case 'ping':
           sendReply(ws, event, 'pong');
           break;
@@ -1429,7 +1635,8 @@ function connectBot() {
             '💸 打卡 贷款 [时长] [内容]\n' +
             '  (正常打卡可抵消贷款)\n\n' +
             '📊 打卡记录 - 查看个人统计\n' +
-            '💰 负债/欠款 - 查看贷款负债\n\n' +
+            '💰 负债/欠款 - 查看贷款负债\n' +
+            '🎖️ 成就 - 查看成就列表\n\n' +
             '🏆 今日排行/周榜/总榜 - 排行榜\n' +
             '📈 群统计 - 查看群整体数据\n\n' +
             '💻 github/代码 - 查看GitHub提交\n' +

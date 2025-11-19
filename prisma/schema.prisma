@@ -13,15 +13,16 @@ datasource db {
 
 // 用户表
 model User {
-  id              Int       @id @default(autoincrement())
-  qqNumber        String    @unique @map("qq_number")
+  id              Int           @id @default(autoincrement())
+  qqNumber        String        @unique @map("qq_number")
   nickname        String
-  streakDays      Int       @default(0) @map("streak_days")      // 当前连续打卡天数
-  maxStreak       Int       @default(0) @map("max_streak")       // 历史最长连续天数
-  lastCheckinDate DateTime? @map("last_checkin_date")            // 最后打卡日期
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
+  streakDays      Int           @default(0) @map("streak_days")      // 当前连续打卡天数
+  maxStreak       Int           @default(0) @map("max_streak")       // 历史最长连续天数
+  lastCheckinDate DateTime?     @map("last_checkin_date")            // 最后打卡日期
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
   checkins        Checkin[]
+  achievements    Achievement[]
 
   @@map("users")
 }
@@ -52,4 +53,17 @@ model Suggestion {
   createdAt DateTime @default(now()) @map("created_at")
 
   @@map("suggestions")
+}
+
+// 用户成就表
+model Achievement {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @map("user_id")
+  achievementId String  @map("achievement_id") // 成就标识符
+  unlockedAt   DateTime @default(now()) @map("unlocked_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([userId, achievementId])
+  @@map("achievements")
 }
