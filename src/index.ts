@@ -1133,7 +1133,7 @@ async function handleRanking(
       title = '📊 总打卡排行榜';
     }
 
-    // 查询正常打卡数据
+    // 查询正常打卡数据（只计算实际打卡，不含贷款）
     const normalStats = await prisma.checkin.groupBy({
       by: ['userId'],
       where: {
@@ -1145,38 +1145,7 @@ async function handleRanking(
       _count: true
     });
 
-    // 查询贷款打卡数据
-    const loanStats = await prisma.checkin.groupBy({
-      by: ['userId'],
-      where: {
-        groupId,
-        isLoan: true,
-        ...(startDate ? { createdAt: { gte: startDate } } : {})
-      },
-      _sum: { duration: true },
-      _count: true
-    });
-
-    // 合并计算净时长
-    const userNetDurations = new Map<number, { netDuration: number; count: number }>();
-
-    // 添加正常打卡
-    for (const stat of normalStats) {
-      const current = userNetDurations.get(stat.userId) || { netDuration: 0, count: 0 };
-      current.netDuration += stat._sum.duration || 0;
-      current.count += stat._count;
-      userNetDurations.set(stat.userId, current);
-    }
-
-    // 减去贷款打卡
-    for (const stat of loanStats) {
-      const current = userNetDurations.get(stat.userId) || { netDuration: 0, count: 0 };
-      current.netDuration -= stat._sum.duration || 0;
-      current.count += stat._count;
-      userNetDurations.set(stat.userId, current);
-    }
-
-    if (userNetDurations.size === 0) {
+    if (normalStats.length === 0) {
       const emptyMsg = type === 'today'
         ? '今天还没有人打卡哦，快来争第一！'
         : type === 'week'
@@ -1186,10 +1155,14 @@ async function handleRanking(
       return;
     }
 
-    // 转换为数组并排序
-    const rankings = Array.from(userNetDurations.entries())
-      .map(([userId, data]) => ({ userId, ...data }))
-      .sort((a, b) => b.netDuration - a.netDuration)
+    // 转换为数组并排序（按实际打卡时长）
+    const rankings = normalStats
+      .map(stat => ({
+        userId: stat.userId,
+        duration: stat._sum.duration || 0,
+        count: stat._count
+      }))
+      .sort((a, b) => b.duration - a.duration)
       .slice(0, 10);
 
     // 获取用户信息
@@ -1209,11 +1182,7 @@ async function handleRanking(
       const medal = i < 3 ? medals[i] : `${i + 1}.`;
 
       message += `${medal} ${nickname}\n`;
-      if (r.netDuration >= 0) {
-        message += `   ${formatDuration(r.netDuration)} (${r.count}次)\n`;
-      } else {
-        message += `   -${formatDuration(Math.abs(r.netDuration))} (${r.count}次)\n`;
-      }
+      message += `   ${formatDuration(r.duration)} (${r.count}次)\n`;
     });
 
     sendReply(ws, event, message);
@@ -1239,7 +1208,7 @@ async function handleGroupStats(
   try {
     const today = getTodayStart();
 
-    // 今日正常打卡统计
+    // 今日正常打卡统计（只计算实际打卡）
     const todayNormal = await prisma.checkin.aggregate({
       where: {
         groupId,
@@ -1250,23 +1219,13 @@ async function handleGroupStats(
       _count: true
     });
 
-    // 今日贷款打卡统计
-    const todayLoan = await prisma.checkin.aggregate({
-      where: {
-        groupId,
-        createdAt: { gte: today },
-        isLoan: true
-      },
-      _sum: { duration: true },
-      _count: true
-    });
-
-    // 今日打卡人数（去重）
+    // 今日打卡人数（去重，只统计正常打卡）
     const todayUsers = await prisma.checkin.groupBy({
       by: ['userId'],
       where: {
         groupId,
-        createdAt: { gte: today }
+        createdAt: { gte: today },
+        isLoan: false
       }
     });
 
@@ -1279,7 +1238,7 @@ async function handleGroupStats(
       }
     });
 
-    // 本周统计
+    // 本周统计（只计算实际打卡）
     const weekStart = getWeekStart();
     const weekNormal = await prisma.checkin.aggregate({
       where: {
@@ -1291,22 +1250,12 @@ async function handleGroupStats(
       _count: true
     });
 
-    const weekLoan = await prisma.checkin.aggregate({
-      where: {
-        groupId,
-        createdAt: { gte: weekStart },
-        isLoan: true
-      },
-      _sum: { duration: true },
-      _count: true
-    });
-
-    // 计算净时长
-    const todayNetMinutes = (todayNormal._sum.duration || 0) - (todayLoan._sum.duration || 0);
-    const todayCount = todayNormal._count + todayLoan._count;
+    // 统计数据
+    const todayMinutes = todayNormal._sum.duration || 0;
+    const todayCount = todayNormal._count;
     const todayUserCount = todayUsers.length;
-    const weekNetMinutes = (weekNormal._sum.duration || 0) - (weekLoan._sum.duration || 0);
-    const weekCount = weekNormal._count + weekLoan._count;
+    const weekMinutes = weekNormal._sum.duration || 0;
+    const weekCount = weekNormal._count;
 
     // 计算打卡率
     const checkinRate = totalUsers > 0
@@ -1317,18 +1266,10 @@ async function handleGroupStats(
     message += `📅 今日\n`;
     message += `├ 打卡人数: ${todayUserCount}/${totalUsers}人 (${checkinRate}%)\n`;
     message += `├ 打卡次数: ${todayCount}次\n`;
-    if (todayNetMinutes >= 0) {
-      message += `└ 净时长: ${formatDuration(todayNetMinutes)}\n\n`;
-    } else {
-      message += `└ 净时长: -${formatDuration(Math.abs(todayNetMinutes))}\n\n`;
-    }
+    message += `└ 打卡时长: ${formatDuration(todayMinutes)}\n\n`;
     message += `📅 本周\n`;
     message += `├ 打卡次数: ${weekCount}次\n`;
-    if (weekNetMinutes >= 0) {
-      message += `└ 净时长: ${formatDuration(weekNetMinutes)}`;
-    } else {
-      message += `└ 净时长: -${formatDuration(Math.abs(weekNetMinutes))}`;
-    }
+    message += `└ 打卡时长: ${formatDuration(weekMinutes)}`;
 
     sendReply(ws, event, message);
 
