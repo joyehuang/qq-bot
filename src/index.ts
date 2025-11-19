@@ -1013,6 +1013,41 @@ async function handleAchievements(
       return;
     }
 
+    // 自动补发老用户应得的成就
+    const normalCheckinCount = await prisma.checkin.count({
+      where: { userId: user.id, isLoan: false }
+    });
+
+    if (normalCheckinCount > 0) {
+      // 有打卡记录就补发"初来乍到"
+      await grantAchievement(user.id, 'first_checkin');
+
+      // 检查累计时长成就
+      const totalStats = await prisma.checkin.aggregate({
+        where: { userId: user.id, isLoan: false },
+        _sum: { duration: true }
+      });
+      const totalMinutes = totalStats._sum.duration || 0;
+
+      if (totalMinutes >= 60) await grantAchievement(user.id, 'total_1h');
+      if (totalMinutes >= 600) await grantAchievement(user.id, 'total_10h');
+      if (totalMinutes >= 6000) await grantAchievement(user.id, 'total_100h');
+
+      // 检查连续打卡成就
+      if (user.maxStreak >= 3) await grantAchievement(user.id, 'streak_3');
+      if (user.maxStreak >= 7) await grantAchievement(user.id, 'streak_7');
+      if (user.maxStreak >= 30) await grantAchievement(user.id, 'streak_30');
+
+      // 检查还清负债成就（如果当前无负债且有过贷款记录）
+      const loanCount = await prisma.checkin.count({
+        where: { userId: user.id, isLoan: true }
+      });
+      if (loanCount > 0) {
+        const debt = await getUserDebt(user.id);
+        if (debt === 0) await grantAchievement(user.id, 'debt_free');
+      }
+    }
+
     // 获取用户已解锁的成就
     const userAchievements = await prisma.achievement.findMany({
       where: { userId: user.id },
