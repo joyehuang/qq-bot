@@ -696,15 +696,17 @@ function connectBot() {
 
       // 移除 @ 信息，提取命令
       // 群消息格式: "[CQ:at,qq=xxx] 打卡 30分钟 学习"
+      // 或手动输入: "@JoyeBot 打卡 30分钟 学习"
       const cleanMessage = message
         .replace(/\[CQ:at,qq=\d+\]\s*/g, '')
+        .replace(/^@\S+\s*/g, '')  // 移除手动输入的 @xxx
         .trim();
 
       // 检查是否真的 @ 了机器人
-      // 如果配置了 BOT_QQ，精确匹配；否则回退到模糊匹配
+      // 支持 CQ 码格式和手动输入的 @机器人名
       const isAtMe = BOT_QQ
-        ? message.includes(`[CQ:at,qq=${BOT_QQ}]`)
-        : message.includes('[CQ:at,qq=');
+        ? message.includes(`[CQ:at,qq=${BOT_QQ}]`) || /^@(JoyeBot|joye|打卡)/i.test(message)
+        : message.includes('[CQ:at,qq=') || /^@/i.test(message);
 
       // 群消息需要 @，私聊直接响应
       if (event.message_type === 'group' && !isAtMe) {
