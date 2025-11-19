@@ -19,6 +19,7 @@ model User {
   streakDays      Int           @default(0) @map("streak_days")      // 当前连续打卡天数
   maxStreak       Int           @default(0) @map("max_streak")       // 历史最长连续天数
   lastCheckinDate DateTime?     @map("last_checkin_date")            // 最后打卡日期
+  dailyGoal       Int?          @map("daily_goal")                   // 每日目标（分钟）
   createdAt       DateTime      @default(now()) @map("created_at")
   updatedAt       DateTime      @updatedAt @map("updated_at")
   checkins        Checkin[]

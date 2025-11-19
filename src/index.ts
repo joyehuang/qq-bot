@@ -16,6 +16,44 @@ const ACHIEVEMENTS: Record<string, { name: string; description: string; icon: st
   'night_owl': { name: '夜猫子', description: '晚上22-24点打卡', icon: '🌙' }
 };
 
+// 随机鼓励语
+const ENCOURAGEMENTS = [
+  '每一次努力都在让你变得更强！',
+  '坚持就是胜利，你做到了！',
+  '今天的汗水是明天的收获～',
+  '比昨天的自己更进一步！',
+  '积少成多，你正在创造奇迹！',
+  '自律即自由，继续加油！',
+  '种一棵树最好的时间是十年前，其次是现在。',
+  '千里之行，始于足下。',
+  '不积跬步，无以至千里。',
+  '今日事今日毕，你很棒！',
+  '每天进步一点点，终将遇见更好的自己。',
+  '成功的秘诀就是每天都比别人多努力一点。',
+  '你的努力终将成就无可替代的自己！',
+  '保持热爱，奔赴山海！',
+  '所有的努力都不会被辜负～'
+];
+
+// 达成目标的祝贺语
+const GOAL_ACHIEVED_MESSAGES = [
+  '🎉 太棒了！今日目标已达成！',
+  '🌟 完美！你完成了今天的目标！',
+  '💯 目标达成！你是最棒的！',
+  '🏅 恭喜！今日任务圆满完成！',
+  '✨ 厉害了！目标已拿下！'
+];
+
+// 获取随机鼓励语
+function getRandomEncouragement(): string {
+  return ENCOURAGEMENTS[Math.floor(Math.random() * ENCOURAGEMENTS.length)];
+}
+
+// 获取随机目标达成祝贺
+function getGoalAchievedMessage(): string {
+  return GOAL_ACHIEVED_MESSAGES[Math.floor(Math.random() * GOAL_ACHIEVED_MESSAGES.length)];
+}
+
 const WS_URL = process.env.WS_URL || 'ws://localhost:6100';
 const prisma = new PrismaClient();
 
@@ -155,8 +193,8 @@ const BOT_INFO = {
     '💸 打卡 贷款 [时长] [内容] - 贷款打卡',
     '📊 打卡记录 - 查看统计',
     '💰 负债 - 查看贷款负债',
+    '🎯 设置目标 [时长] - 每日目标',
     '🏆 今日排行/周榜/总榜 - 排行榜',
-    '📈 群统计 - 查看群数据',
     '🎖️ 成就 - 查看成就',
     '❓ 帮助 - 查看所有命令'
   ]
@@ -631,27 +669,50 @@ async function handleCheckin(
 
       replyMsg += `📊 今日累计: ${formatDuration(todayMinutes)} (${todayStats._count}次)\n`;
 
+      // 显示目标进度
+      if (user.dailyGoal && user.dailyGoal > 0) {
+        const progress = Math.min(100, Math.round((todayMinutes / user.dailyGoal) * 100));
+        const progressBar = '█'.repeat(Math.floor(progress / 10)) + '░'.repeat(10 - Math.floor(progress / 10));
+
+        if (todayMinutes >= user.dailyGoal) {
+          // 检查是否是刚刚达成目标
+          const previousTodayMinutes = todayMinutes - duration;
+          if (previousTodayMinutes < user.dailyGoal) {
+            replyMsg += `\n${getGoalAchievedMessage()}\n`;
+          }
+          replyMsg += `🎯 目标: ${progressBar} ${progress}%\n`;
+        } else {
+          const remaining = user.dailyGoal - todayMinutes;
+          replyMsg += `🎯 目标: ${progressBar} ${progress}%\n`;
+          replyMsg += `   还差 ${formatDuration(remaining)} 达成目标\n`;
+        }
+      }
+
       // 显示连续打卡信息
       if (streakInfo.streakDays > 0) {
         if (streakInfo.isNewStreak && streakInfo.streakDays === 1) {
-          replyMsg += `🔥 开始新的连续打卡！`;
+          replyMsg += `🔥 开始新的连续打卡！\n`;
         } else if (streakInfo.streakDays >= 7) {
-          replyMsg += `🔥 连续打卡 ${streakInfo.streakDays} 天！太强了！`;
+          replyMsg += `🔥 连续打卡 ${streakInfo.streakDays} 天！太强了！\n`;
         } else {
-          replyMsg += `🔥 连续打卡 ${streakInfo.streakDays} 天`;
+          replyMsg += `🔥 连续打卡 ${streakInfo.streakDays} 天\n`;
         }
       }
 
       // 显示新获得的成就
       if (newAchievements.length > 0) {
-        replyMsg += `\n\n🏆 解锁成就：`;
+        replyMsg += `\n🏆 解锁成就：`;
         for (const achId of newAchievements) {
           const ach = ACHIEVEMENTS[achId];
           if (ach) {
             replyMsg += `\n${ach.icon} ${ach.name} - ${ach.description}`;
           }
         }
+        replyMsg += '\n';
       }
+
+      // 添加随机鼓励语
+      replyMsg += `\n💬 ${getRandomEncouragement()}`;
 
       sendReply(ws, event, replyMsg);
     }
@@ -1093,6 +1154,73 @@ async function handleAchievements(
   }
 }
 
+// 设置每日目标
+async function handleSetGoal(
+  ws: WebSocket,
+  event: Message,
+  args: string[]
+): Promise<void> {
+  const userId = event.user_id!;
+  const nickname = event.sender?.card || event.sender?.nickname || '未知用户';
+
+  try {
+    // 查找或创建用户
+    let user = await prisma.user.findUnique({
+      where: { qqNumber: userId.toString() }
+    });
+
+    if (!user) {
+      user = await prisma.user.create({
+        data: {
+          qqNumber: userId.toString(),
+          nickname: nickname
+        }
+      });
+    }
+
+    // 检查是否要清除目标
+    if (args.length === 0 || args[0] === '清除' || args[0] === '取消') {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { dailyGoal: null }
+      });
+      sendReply(ws, event, '✅ 已清除每日目标');
+      return;
+    }
+
+    // 解析目标时长
+    const goalMinutes = parseDuration(args[0]);
+    if (!goalMinutes || goalMinutes <= 0) {
+      sendReply(ws, event, '格式错误！请使用: 设置目标 [时长]\n例如: 设置目标 2小时\n\n清除目标: 设置目标 清除');
+      return;
+    }
+
+    // 限制最大目标
+    if (goalMinutes > 1440) { // 24小时
+      sendReply(ws, event, '目标时长最多24小时哦～');
+      return;
+    }
+
+    // 更新目标
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { dailyGoal: goalMinutes }
+    });
+
+    sendReply(
+      ws,
+      event,
+      `🎯 每日目标已设置: ${formatDuration(goalMinutes)}\n\n` +
+      `打卡时会显示目标进度，达成后会有特别祝贺！\n` +
+      `清除目标: 设置目标 清除`
+    );
+
+  } catch (error) {
+    console.error('设置目标失败:', error);
+    sendReply(ws, event, '设置失败，请稍后重试');
+  }
+}
+
 // 注册打卡
 async function handleRegister(
   ws: WebSocket,
@@ -1516,6 +1644,12 @@ function connectBot() {
           await handleAchievements(ws, event);
           break;
 
+        case '设置目标':
+        case '目标':
+        case '每日目标':
+          await handleSetGoal(ws, event, args);
+          break;
+
         case 'ping':
           sendReply(ws, event, 'pong');
           break;
@@ -1666,6 +1800,7 @@ function connectBot() {
             '  (正常打卡可抵消贷款)\n\n' +
             '📊 打卡记录 - 查看个人统计\n' +
             '💰 负债/欠款 - 查看贷款负债\n' +
+            '🎯 设置目标 [时长] - 每日目标\n' +
             '🎖️ 成就 - 查看成就列表\n\n' +
             '🏆 今日排行/周榜/总榜 - 排行榜\n' +
             '📈 群统计 - 查看群整体数据\n\n' +
