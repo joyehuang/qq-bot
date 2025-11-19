@@ -34,5 +34,7 @@ services:
       - REMINDER_TIMEZONE=Australia/Melbourne
       - GITHUB_USERNAME=joyehuang
       - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - AI_API_KEY=${AI_API_KEY}
+      - AI_MODEL=${AI_MODEL:-Qwen/Qwen2.5-7B-Instruct}
     # 等待 napcat 启动后再连接
     command: sh -c "sleep 5 && npx ts-node src/index.ts"
