@@ -945,6 +945,10 @@ async function handleCheckinStats(
     const totalCount = totalNormal._count + totalLoan._count;
     const todayCount = todayNormal._count + todayLoan._count;
 
+    // 实际打卡时长（只计算正常打卡）
+    const totalActualMinutes = totalNormal._sum.duration || 0;
+    const todayActualMinutes = todayNormal._sum.duration || 0;
+
     // 获取当前负债
     const currentDebt = await getUserDebt(user.id);
 
@@ -957,22 +961,19 @@ async function handleCheckinStats(
 
     let message = `📊 ${user.nickname} 的打卡统计\n\n`;
 
-    // 显示今日净时长
-    if (todayNetMinutes >= 0) {
-      message += `今日: ${formatDuration(todayNetMinutes)} (${todayCount}次)\n`;
-    } else {
-      message += `今日: -${formatDuration(Math.abs(todayNetMinutes))} (${todayCount}次)\n`;
-    }
+    // 显示今日
+    message += `今日: ${formatDuration(todayActualMinutes)} (${todayNormal._count}次)\n`;
 
-    // 显示累计净时长
-    if (totalNetMinutes >= 0) {
-      message += `累计: ${formatDuration(totalNetMinutes)} (${totalCount}次)\n`;
-    } else {
-      message += `累计: -${formatDuration(Math.abs(totalNetMinutes))} (${totalCount}次)\n`;
-    }
+    // 显示累计实际打卡
+    message += `累计: ${formatDuration(totalActualMinutes)} (${totalNormal._count}次)\n`;
 
-    // 显示负债信息
+    // 显示净时长（如果有负债）
     if (currentDebt > 0) {
+      if (totalNetMinutes >= 0) {
+        message += `净时长: ${formatDuration(totalNetMinutes)}\n`;
+      } else {
+        message += `净时长: -${formatDuration(Math.abs(totalNetMinutes))}\n`;
+      }
       message += `💸 当前负债: ${formatDuration(currentDebt)}\n`;
     }
 
@@ -1057,6 +1058,10 @@ async function handleViewUserStats(
     const totalCount = totalNormal._count + totalLoan._count;
     const todayCount = todayNormal._count + todayLoan._count;
 
+    // 实际打卡时长（只计算正常打卡）
+    const totalActualMinutes = totalNormal._sum.duration || 0;
+    const todayActualMinutes = todayNormal._sum.duration || 0;
+
     // 获取当前负债
     const currentDebt = await getUserDebt(user.id);
 
@@ -1069,27 +1074,24 @@ async function handleViewUserStats(
 
     let message = `📊 ${user.nickname} 的打卡记录\n\n`;
 
-    // 显示今日净时长
-    if (todayNetMinutes >= 0) {
-      message += `今日: ${formatDuration(todayNetMinutes)} (${todayCount}次)\n`;
-    } else {
-      message += `今日: -${formatDuration(Math.abs(todayNetMinutes))} (${todayCount}次)\n`;
-    }
+    // 显示今日
+    message += `今日: ${formatDuration(todayActualMinutes)} (${todayNormal._count}次)\n`;
 
-    // 显示累计净时长
-    if (totalNetMinutes >= 0) {
-      message += `累计: ${formatDuration(totalNetMinutes)} (${totalCount}次)\n`;
-    } else {
-      message += `累计: -${formatDuration(Math.abs(totalNetMinutes))} (${totalCount}次)\n`;
-    }
+    // 显示累计实际打卡
+    message += `累计: ${formatDuration(totalActualMinutes)} (${totalNormal._count}次)\n`;
 
     // 显示连续打卡
     if (user.streakDays > 0) {
       message += `🔥 连续打卡: ${user.streakDays}天\n`;
     }
 
-    // 显示负债信息
+    // 显示净时长和负债信息（如果有负债）
     if (currentDebt > 0) {
+      if (totalNetMinutes >= 0) {
+        message += `净时长: ${formatDuration(totalNetMinutes)}\n`;
+      } else {
+        message += `净时长: -${formatDuration(Math.abs(totalNetMinutes))}\n`;
+      }
       message += `💸 当前负债: ${formatDuration(currentDebt)}\n`;
     }
 
