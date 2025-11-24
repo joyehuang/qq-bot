@@ -403,7 +403,7 @@ function handleIntroduction(ws: WebSocket, event: Message, message: string): boo
       event,
       `🎯 我可以帮你:\n\n${BOT_INFO.commands.join('\n')}\n\n` +
       `⏱️ 支持多种时长格式:\n` +
-      `30分钟、1小时、1h30m、1天、3600秒 等\n\n` +
+      `30分钟、1小时、1h30m、3h30min、1天、3600秒 等\n\n` +
       `发送"帮助"查看完整命令列表～`
     );
     return true;
@@ -431,8 +431,8 @@ function parseDuration(durationStr: string): number | null {
   let totalMinutes = 0;
   let matched = false;
 
-  // 复合格式: "1小时30分钟", "2h30m", "1时30分"
-  const compoundMatch = durationStr.match(/^([\d.]+)\s*(小时|时|h|H)\s*([\d.]+)\s*(分钟|分|m|M)?$/);
+  // 复合格式: "1小时30分钟", "2h30m", "1时30分", "3h30min"
+  const compoundMatch = durationStr.match(/^([\d.]+)\s*(小时|时|h|H)\s*([\d.]+)\s*(分钟|分|m|M|min|mins|minute|minutes)?$/i);
   if (compoundMatch) {
     totalMinutes = Math.round(parseFloat(compoundMatch[1]) * 60 + parseFloat(compoundMatch[3]));
     return totalMinutes > 0 ? totalMinutes : null;
@@ -691,7 +691,7 @@ async function handleCheckin(
 
   const duration = parseDuration(durationStr);
   if (!duration || duration <= 0) {
-    sendReply(ws, event, '时长格式错误！支持: 30分钟, 1小时, 1h30m, 90m, 1天, 3600秒');
+    sendReply(ws, event, '时长格式错误！支持: 30分钟, 1小时, 1h30m, 3h30min, 90m, 1天, 3600秒');
     return;
   }
 
