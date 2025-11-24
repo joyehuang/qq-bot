@@ -352,6 +352,7 @@ const BOT_INFO = {
     '🆕 我想打卡 - 新人注册',
     '📝 打卡 [时长] [内容] - 记录打卡',
     '💸 打卡 贷款 [时长] [内容] - 贷款打卡',
+    '🔙 撤销打卡 - 撤销今日最后一条',
     '📊 打卡记录 - 查看统计(含AI分析)',
     '📅 周报 - 本周报告(含AI总结)',
     '💰 负债 - 查看贷款负债',
@@ -2186,6 +2187,49 @@ function connectBot() {
           sendReply(ws, event, `👑 管理员列表:\n${Array.from(adminList).map(qq => qq === SUPER_ADMIN_QQ ? `${qq} (超管)` : qq).join('\n')}`);
           break;
 
+        case '撤销打卡':
+        case '撤销':
+        case '删除打卡':
+          // 查询用户今天最后一条打卡记录
+          const userToUndo = await prisma.user.findUnique({ where: { qqNumber: senderQQ } });
+          if (!userToUndo) {
+            sendReply(ws, event, '你还没有注册哦！发送「我想打卡」开始使用～');
+            break;
+          }
+
+          // 获取今天的最后一条打卡记录
+          const todayStart = new Date();
+          todayStart.setHours(0, 0, 0, 0);
+
+          const lastCheckin = await prisma.checkin.findFirst({
+            where: {
+              userId: userToUndo.id,
+              createdAt: { gte: todayStart }
+            },
+            orderBy: { createdAt: 'desc' }
+          });
+
+          if (!lastCheckin) {
+            sendReply(ws, event, '❌ 你今天还没有打卡记录哦！');
+            break;
+          }
+
+          // 删除这条打卡记录
+          await prisma.checkin.delete({
+            where: { id: lastCheckin.id }
+          });
+
+          const checkinType = lastCheckin.isLoan ? '贷款打卡' : '打卡';
+          sendReply(
+            ws,
+            event,
+            `✅ 已撤销最后一条${checkinType}记录:\n\n` +
+            `📝 内容: ${lastCheckin.content}\n` +
+            `⏱️ 时长: ${formatDuration(lastCheckin.duration)}\n` +
+            `🕐 时间: ${lastCheckin.createdAt.toLocaleString('zh-CN', { timeZone: 'Australia/Melbourne' })}`
+          );
+          break;
+
         case '帮助':
         case 'help':
           let helpMsg = '📖 可用命令:\n\n' +
@@ -2194,6 +2238,7 @@ function connectBot() {
             '  例: 打卡 30分钟 学习TypeScript\n\n' +
             '💸 打卡 贷款 [时长] [内容]\n' +
             '  (正常打卡可抵消贷款)\n\n' +
+            '🔙 撤销打卡 - 撤销今日最后一条记录\n\n' +
             '📊 打卡记录 - 查看统计(含AI分析)\n' +
             '👀 查看打卡 @某人 - 查看他人记录\n' +
             '📅 周报 - 本周报告(含AI总结)\n' +
