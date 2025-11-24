@@ -2191,7 +2191,7 @@ function connectBot() {
         case '撤销':
         case '删除打卡':
           // 查询用户今天最后一条打卡记录
-          const userToUndo = await prisma.user.findUnique({ where: { qqNumber: senderQQ } });
+          const userToUndo = await prisma.user.findUnique({ where: { qqNumber: event.user_id!.toString() } });
           if (!userToUndo) {
             sendReply(ws, event, '你还没有注册哦！发送「我想打卡」开始使用～');
             break;
