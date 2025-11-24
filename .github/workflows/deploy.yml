@@ -1,0 +1,34 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 📦 Checkout code
+      uses: actions/checkout@v4
+
+    - name: 📋 Show commit info
+      run: |
+        echo "部署提交: ${{ github.sha }}"
+        echo "提交者: ${{ github.actor }}"
+        echo "提交信息: ${{ github.event.head_commit.message }}"
+
+    - name: 🚀 Deploy to EC2
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.EC2_HOST }}
+        username: ${{ secrets.EC2_USER }}
+        key: ${{ secrets.EC2_SSH_KEY }}
+        script: |
+          /home/ubuntu/deploy-qqbot.sh
+
+    - name: ✅ Deployment complete
+      run: |
+        echo "🎉 QQ Bot 已成功部署到服务器！"
+        echo "查看日志: docker compose logs -f bot"
