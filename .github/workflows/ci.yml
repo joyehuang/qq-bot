@@ -23,12 +23,18 @@ jobs:
 
     - name: 📥 安装依赖
       run: npm ci
+      env:
+        DATABASE_URL: "file:./dev.db"
 
     - name: 🔧 生成 Prisma Client
       run: npx prisma generate
+      env:
+        DATABASE_URL: "file:./dev.db"
 
     - name: 🔍 TypeScript 编译检查
       run: npx tsc --noEmit
+      env:
+        DATABASE_URL: "file:./dev.db"
 
     - name: ✅ 检查通过
       run: echo "🎉 代码检查通过！可以安全部署。"
