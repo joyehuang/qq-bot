@@ -24,6 +24,9 @@ jobs:
     - name: 📥 安装依赖
       run: npm ci
 
+    - name: 🔧 生成 Prisma Client
+      run: npx prisma generate
+
     - name: 🔍 TypeScript 编译检查
       run: npx tsc --noEmit
 
