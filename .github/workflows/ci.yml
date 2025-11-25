@@ -1,0 +1,31 @@
+name: CI - 代码检查
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  check:
+    name: TypeScript 编译检查
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 📦 检出代码
+      uses: actions/checkout@v4
+
+    - name: 🟢 设置 Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+
+    - name: 📥 安装依赖
+      run: npm ci
+
+    - name: 🔍 TypeScript 编译检查
+      run: npx tsc --noEmit
+
+    - name: ✅ 检查通过
+      run: echo "🎉 代码检查通过！可以安全部署。"

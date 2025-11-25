@@ -6,7 +6,31 @@ on:
   workflow_dispatch:
 
 jobs:
+  # 先进行代码检查
+  check:
+    name: 代码检查
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 📦 检出代码
+      uses: actions/checkout@v4
+
+    - name: 🟢 设置 Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+
+    - name: 📥 安装依赖
+      run: npm ci
+
+    - name: 🔍 TypeScript 编译检查
+      run: npx tsc --noEmit
+
+  # 检查通过后才部署
   deploy:
+    name: 部署到服务器
+    needs: check  # ← 关键：依赖 check job
     runs-on: ubuntu-latest
 
     steps:
