@@ -20,6 +20,7 @@ model User {
   maxStreak       Int           @default(0) @map("max_streak")       // 历史最长连续天数
   lastCheckinDate DateTime?     @map("last_checkin_date")            // 最后打卡日期
   dailyGoal       Int?          @map("daily_goal")                   // 每日目标（分钟）
+  aiStyle         String        @default("encourage") @map("ai_style") // AI 风格：encourage/strict/funny/professional/ridicule
   createdAt       DateTime      @default(now()) @map("created_at")
   updatedAt       DateTime      @updatedAt @map("updated_at")
   checkins        Checkin[]

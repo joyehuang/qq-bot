@@ -1,6 +1,7 @@
 import "dotenv/config";
 import WebSocket from 'ws';
 import { PrismaClient, Checkin, Suggestion, Achievement } from './generated/prisma/client';
+import { getAIStyle } from './config/aiStyles';
 
 // 成就定义
 const ACHIEVEMENTS: Record<string, { name: string; description: string; icon: string }> = {
@@ -110,6 +111,42 @@ async function callAI(systemPrompt: string, userPrompt: string): Promise<string 
   }
 }
 
+// 生成 AI 鼓励语
+async function generateAIEncouragement(
+  user: { nickname: string; aiStyle: string; streakDays: number; dailyGoal: number | null },
+  checkinInfo: { duration: number; content: string; todayMinutes: number; isGoalAchieved: boolean }
+): Promise<string> {
+  // 如果没有 AI API Key，回退到随机鼓励语
+  if (!AI_API_KEY) {
+    return getRandomEncouragement();
+  }
+
+  try {
+    const style = getAIStyle(user.aiStyle);
+    const userPrompt = `用户 ${user.nickname} 刚刚完成了一次打卡：
+- 本次打卡时长：${Math.floor(checkinInfo.duration / 60)}小时${checkinInfo.duration % 60}分钟
+- 打卡内容：${checkinInfo.content}
+- 今日累计时长：${Math.floor(checkinInfo.todayMinutes / 60)}小时${checkinInfo.todayMinutes % 60}分钟
+- 连续打卡天数：${user.streakDays}天
+${user.dailyGoal ? `- 每日目标：${Math.floor(user.dailyGoal / 60)}小时${user.dailyGoal % 60}分钟` : ''}
+${checkinInfo.isGoalAchieved ? '- 今日目标已达成！' : ''}
+
+请用你的风格给予回应和鼓励。`;
+
+    const aiResponse = await callAI(style.systemPrompt, userPrompt);
+
+    // 如果 AI 调用失败，回退到随机鼓励语
+    if (!aiResponse) {
+      return getRandomEncouragement();
+    }
+
+    return aiResponse;
+  } catch (error) {
+    console.error('生成 AI 鼓励语失败:', error);
+    return getRandomEncouragement();
+  }
+}
+
 // 获取用户打卡分析数据
 async function getUserAnalyticsData(userId: number) {
   const today = getTodayStart();
@@ -190,7 +227,7 @@ async function getUserAnalyticsData(userId: number) {
 }
 
 // 生成AI分析
-async function generateAIAnalysis(userId: number, nickname: string): Promise<string | null> {
+async function generateAIAnalysis(userId: number, nickname: string, aiStyle: string): Promise<string | null> {
   const data = await getUserAnalyticsData(userId);
 
   // 如果数据太少，不生成分析
@@ -198,12 +235,14 @@ async function generateAIAnalysis(userId: number, nickname: string): Promise<str
     return null;
   }
 
-  const systemPrompt = `你是一个打卡机器人的AI助手，负责分析用户的打卡数据并给出个性化的洞察和建议。
+  const style = getAIStyle(aiStyle);
+  const systemPrompt = `${style.systemPrompt}
+
+你正在分析用户的打卡数据并给出个性化的洞察和建议。
 要求：
-- 用简短、温暖、有趣的语气
-- 2-3句话，不超过80字
+- 基于你的风格给予回应
+- 2-3句话，不超过100字
 - 要基于数据给出具体的观察
-- 可以适当调侃但要友善
 - 不要用"您"，用"你"`;
 
   const userPrompt = `用户「${nickname}」的打卡数据：
@@ -213,7 +252,7 @@ async function generateAIAnalysis(userId: number, nickname: string): Promise<str
 - 常打卡内容：${data.topContents.join('、') || '暂无'}
 - 常打卡时段：${data.topHours.join('、') || '暂无'}
 
-请给出个性化分析和建议。`;
+请用你的风格给出个性化分析和建议。`;
 
   return await callAI(systemPrompt, userPrompt);
 }
@@ -874,8 +913,23 @@ async function handleCheckin(
         replyMsg += '\n';
       }
 
-      // 添加随机鼓励语
-      replyMsg += `\n💬 ${getRandomEncouragement()}`;
+      // 添加 AI 鼓励语
+      const isGoalAchieved = user.dailyGoal ? todayMinutes >= user.dailyGoal : false;
+      const encouragement = await generateAIEncouragement(
+        {
+          nickname: user.nickname,
+          aiStyle: user.aiStyle,
+          streakDays: streakInfo.streakDays,
+          dailyGoal: user.dailyGoal
+        },
+        {
+          duration,
+          content,
+          todayMinutes,
+          isGoalAchieved
+        }
+      );
+      replyMsg += `\n💬 ${encouragement}`;
 
       sendReply(ws, event, replyMsg);
     }
@@ -987,7 +1041,7 @@ async function handleCheckinStats(
     });
 
     // 生成 AI 分析
-    const aiAnalysis = await generateAIAnalysis(user.id, user.nickname);
+    const aiAnalysis = await generateAIAnalysis(user.id, user.nickname, user.aiStyle);
     if (aiAnalysis) {
       message += `\n🤖 AI 小结:\n${aiAnalysis}`;
     }
@@ -1438,7 +1492,7 @@ async function handleWeeklyReport(
     }
 
     // AI 总结
-    const aiSummary = await generateWeeklyAISummary(user.id, user.nickname, data);
+    const aiSummary = await generateWeeklyAISummary(user.id, user.nickname, data, user.aiStyle);
     if (aiSummary) {
       message += `\n🤖 AI 总结:\n${aiSummary}`;
     }
@@ -1455,7 +1509,8 @@ async function handleWeeklyReport(
 async function generateWeeklyAISummary(
   userId: number,
   nickname: string,
-  data: Awaited<ReturnType<typeof getUserAnalyticsData>>
+  data: Awaited<ReturnType<typeof getUserAnalyticsData>>,
+  aiStyle: string
 ): Promise<string | null> {
   if (data.weekCount < 1) {
     return null;
@@ -1466,13 +1521,15 @@ async function generateWeeklyAISummary(
     ? Math.round((minutesDiff / data.lastWeekMinutes) * 100)
     : 0;
 
-  const systemPrompt = `你是一个打卡机器人的AI助手，负责生成用户的周报总结。
+  const style = getAIStyle(aiStyle);
+  const systemPrompt = `${style.systemPrompt}
+
+你正在生成用户的周报总结。
 要求：
-- 用简短、温暖、有趣的语气
-- 3-4句话，不超过100字
+- 基于你的风格给予回应
+- 3-4句话，不超过120字
 - 要基于数据变化给出具体评价
-- 给出下周的建议或鼓励
-- 可以适当调侃但要友善`;
+- 给出下周的建议或鼓励`;
 
   const userPrompt = `用户「${nickname}」的周报数据：
 - 本周：${formatDuration(data.weekMinutes)}，${data.weekCount}次
@@ -1481,7 +1538,7 @@ async function generateWeeklyAISummary(
 - 连续打卡：${data.streakDays}天
 - 本周主要内容：${data.topContents.join('、') || '暂无'}
 
-请生成周报总结和下周建议。`;
+请用你的风格生成周报总结和下周建议。`;
 
   return await callAI(systemPrompt, userPrompt);
 }
@@ -1549,6 +1606,88 @@ async function handleSetGoal(
 
   } catch (error) {
     console.error('设置目标失败:', error);
+    sendReply(ws, event, '设置失败，请稍后重试');
+  }
+}
+
+// 设置 AI 风格
+async function handleSetAIStyle(
+  ws: WebSocket,
+  event: Message,
+  args: string[]
+): Promise<void> {
+  const userId = event.user_id!;
+  const nickname = event.sender?.card || event.sender?.nickname || '未知用户';
+
+  try {
+    // 查找或创建用户
+    let user = await prisma.user.findUnique({
+      where: { qqNumber: userId.toString() }
+    });
+
+    if (!user) {
+      user = await prisma.user.create({
+        data: {
+          qqNumber: userId.toString(),
+          nickname: nickname
+        }
+      });
+    }
+
+    // 如果没有参数，显示当前风格和所有可用风格
+    if (args.length === 0) {
+      const { getAllAIStyles } = await import('./config/aiStyles');
+      const allStyles = getAllAIStyles();
+      const currentStyle = allStyles.find(s => s.id === user.aiStyle);
+
+      let replyMsg = `🎨 当前 AI 风格：${currentStyle?.name || '温柔鼓励型'}\n\n`;
+      replyMsg += `📋 可用风格列表：\n`;
+
+      for (const style of allStyles) {
+        const current = style.id === user.aiStyle ? ' ✓' : '';
+        replyMsg += `\n${style.id}${current}\n`;
+        replyMsg += `  ${style.name} - ${style.description}\n`;
+      }
+
+      replyMsg += `\n使用方法: 设置风格 [风格ID]\n`;
+      replyMsg += `例如: 设置风格 strict`;
+
+      sendReply(ws, event, replyMsg);
+      return;
+    }
+
+    // 验证风格 ID
+    const styleId = args[0].toLowerCase();
+    const { isValidAIStyle, getAIStyle } = await import('./config/aiStyles');
+
+    if (!isValidAIStyle(styleId)) {
+      sendReply(
+        ws,
+        event,
+        `❌ 无效的风格 ID！\n\n` +
+        `可用风格：encourage, strict, funny, professional, ridicule\n` +
+        `查看详情: 风格列表`
+      );
+      return;
+    }
+
+    // 更新风格
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { aiStyle: styleId }
+    });
+
+    const style = getAIStyle(styleId);
+    sendReply(
+      ws,
+      event,
+      `🎨 AI 风格已设置为：${style.name}\n\n` +
+      `${style.description}\n\n` +
+      `下次打卡时就会使用新风格啦！`
+    );
+
+  } catch (error) {
+    console.error('设置风格失败:', error);
     sendReply(ws, event, '设置失败，请稍后重试');
   }
 }
@@ -2008,6 +2147,13 @@ function connectBot() {
         case '目标':
         case '每日目标':
           await handleSetGoal(ws, event, args);
+          break;
+
+        case '设置风格':
+        case 'AI风格':
+        case '风格':
+        case '风格列表':
+          await handleSetAIStyle(ws, event, args);
           break;
 
         case '周报':
