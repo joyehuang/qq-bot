@@ -270,6 +270,10 @@ const REMINDER_TIMEZONE = process.env.REMINDER_TIMEZONE || 'Australia/Melbourne'
 const GITHUB_USERNAME = process.env.GITHUB_USERNAME || '';
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || ''; // 用于访问私有仓库
 
+// 头衔系统配置
+const TITLE_GROUP_ID = process.env.TITLE_GROUP_ID || REMINDER_GROUP_ID; // 启用头衔功能的群号（默认和督促群相同）
+const DEBT_THRESHOLD = parseInt(process.env.DEBT_THRESHOLD || '300'); // 打卡老赖阈值（分钟，默认5小时）
+
 // 机器人QQ号（用于检测是否被@）
 const BOT_QQ = process.env.BOT_QQ || '';
 
@@ -708,23 +712,51 @@ async function handleCheckin(
   event: Message,
   args: string[]
 ): Promise<void> {
-  const userId = event.user_id!;
+  const senderId = event.user_id!;
   const groupId = event.group_id?.toString() || 'private';
-  const nickname = event.sender?.card || event.sender?.nickname || '未知用户';
+  const senderNickname = event.sender?.card || event.sender?.nickname || '未知用户';
+
+  // 检测是否为他人打卡（检测 @某人）
+  let targetUserId = senderId;
+  let targetNickname = senderNickname;
+  let isForOthers = false;
+  let actualArgs = [...args];
+
+  // 检查第一个参数是否是 @ 某人
+  const argStr = args.join(' ');
+  const atMatch = argStr.match(/\[CQ:at,qq=(\d+)\]/);
+
+  if (atMatch) {
+    // 为他人打卡
+    targetUserId = parseInt(atMatch[1]);
+    isForOthers = true;
+
+    // 从 args 中移除 CQ 码，重新构建参数数组
+    const cleanArgStr = argStr.replace(/\[CQ:at,qq=\d+\]\s*/g, '').trim();
+    actualArgs = cleanArgStr.split(/\s+/);
+
+    // 尝试获取被 @ 的人的昵称（从群成员信息）
+    // 如果获取不到，后续会在数据库查找或创建时使用 QQ 号
+    targetNickname = `用户${atMatch[1]}`;
+  }
 
   // 检查参数
-  if (args.length < 2) {
-    sendReply(ws, event, '格式错误！请使用: @机器人 打卡 [时长] [内容]\n例如: @机器人 打卡 30分钟 学习TypeScript\n\n💸 贷款打卡: @机器人 打卡 贷款 [时长] [内容]');
+  if (actualArgs.length < 2) {
+    sendReply(ws, event, '格式错误！请使用:\n' +
+      '• 为自己打卡: @机器人 打卡 [时长] [内容]\n' +
+      '• 为他人打卡: @机器人 @某人 打卡 [时长] [内容]\n' +
+      '例如: @机器人 打卡 30分钟 学习TypeScript\n\n' +
+      '💸 贷款打卡: @机器人 打卡 贷款 [时长] [内容]');
     return;
   }
 
   // 检查是否是贷款打卡
-  const isLoan = args[0] === '贷款';
-  const durationStr = isLoan ? args[1] : args[0];
-  const content = isLoan ? args.slice(2).join(' ') : args.slice(1).join(' ');
+  const isLoan = actualArgs[0] === '贷款';
+  const durationStr = isLoan ? actualArgs[1] : actualArgs[0];
+  const content = isLoan ? actualArgs.slice(2).join(' ') : actualArgs.slice(1).join(' ');
 
   // 贷款打卡需要至少3个参数
-  if (isLoan && args.length < 3) {
+  if (isLoan && actualArgs.length < 3) {
     sendReply(ws, event, '贷款打卡格式: @机器人 打卡 贷款 [时长] [内容]\n例如: @机器人 打卡 贷款 1小时 学习');
     return;
   }
@@ -743,24 +775,21 @@ async function handleCheckin(
   }
 
   try {
-    // 查找或创建用户
+    // 查找或创建用户（为目标用户打卡）
     let user = await prisma.user.findUnique({
-      where: { qqNumber: userId.toString() }
+      where: { qqNumber: targetUserId.toString() }
     });
 
     if (!user) {
       user = await prisma.user.create({
         data: {
-          qqNumber: userId.toString(),
-          nickname: nickname
+          qqNumber: targetUserId.toString(),
+          nickname: targetNickname
         }
       });
-    } else if (user.nickname !== nickname) {
-      // 更新昵称
-      user = await prisma.user.update({
-        where: { id: user.id },
-        data: { nickname }
-      });
+    } else if (isForOthers && user.nickname === `用户${targetUserId}`) {
+      // 如果之前用 QQ 号作为昵称，现在尝试更新（如果能获取到真实昵称）
+      // 这里暂时保持不变，除非有更好的方式获取群成员昵称
     }
 
     // 获取打卡前的负债
@@ -842,9 +871,15 @@ async function handleCheckin(
       const messagePool = isConsecutiveLoan ? consecutiveMessages : loanMessages;
       const randomMsg = messagePool[Math.floor(Math.random() * messagePool.length)];
 
+      const forWhomPrefix = isForOthers ? `已为 ${user.nickname} 贷款打卡\n\n` : '';
+      // 更新头衔
+      await updateDebtTitle(ws, user.id, debtAfter);
+      await updateDailyTopTitle(ws);
+
       sendReply(
         ws,
         event,
+        forWhomPrefix +
         `💸 贷款打卡成功！\n` +
         `📝 内容: ${content}\n` +
         `⏱️ 借款时长: ${formatDuration(duration)}\n` +
@@ -853,7 +888,9 @@ async function handleCheckin(
       );
     } else {
       // 正常打卡的回复
-      let replyMsg = `✅ 打卡成功！\n` +
+      const forWhomPrefix = isForOthers ? `已为 ${user.nickname} 打卡\n\n` : '';
+      let replyMsg = forWhomPrefix +
+        `✅ 打卡成功！\n` +
         `📝 内容: ${content}\n` +
         `⏱️ 时长: ${formatDuration(duration)}\n`;
 
@@ -908,28 +945,39 @@ async function handleCheckin(
           const ach = ACHIEVEMENTS[achId];
           if (ach) {
             replyMsg += `\n${ach.icon} ${ach.name} - ${ach.description}`;
+            // 设置成就头衔（24小时后自动清除）
+            if (!isForOthers && TITLE_GROUP_ID) {
+              const achievementTitle = `${ach.icon}${ach.name}`;
+              setGroupTitle(ws, TITLE_GROUP_ID, targetUserId.toString(), achievementTitle, 86400);
+            }
           }
         }
         replyMsg += '\n';
       }
 
-      // 添加 AI 鼓励语
-      const isGoalAchieved = user.dailyGoal ? todayMinutes >= user.dailyGoal : false;
-      const encouragement = await generateAIEncouragement(
-        {
-          nickname: user.nickname,
-          aiStyle: user.aiStyle,
-          streakDays: streakInfo.streakDays,
-          dailyGoal: user.dailyGoal
-        },
-        {
-          duration,
-          content,
-          todayMinutes,
-          isGoalAchieved
-        }
-      );
-      replyMsg += `\n💬 ${encouragement}`;
+      // 添加 AI 鼓励语（仅为自己打卡时显示）
+      if (!isForOthers) {
+        const isGoalAchieved = user.dailyGoal ? todayMinutes >= user.dailyGoal : false;
+        const encouragement = await generateAIEncouragement(
+          {
+            nickname: user.nickname,
+            aiStyle: user.aiStyle,
+            streakDays: streakInfo.streakDays,
+            dailyGoal: user.dailyGoal
+          },
+          {
+            duration,
+            content,
+            todayMinutes,
+            isGoalAchieved
+          }
+        );
+        replyMsg += `\n💬 ${encouragement}`;
+      }
+
+      // 更新头衔
+      await updateDebtTitle(ws, user.id, debtAfter);
+      await updateDailyTopTitle(ws);
 
       sendReply(ws, event, replyMsg);
     }
@@ -1886,6 +1934,116 @@ function sendGroupMessage(ws: WebSocket, groupId: string, message: string): void
   ws.send(JSON.stringify(msg));
 }
 
+// 设置群头衔
+function setGroupTitle(ws: WebSocket, groupId: string, userId: string, title: string, duration: number = -1): void {
+  if (!TITLE_GROUP_ID || groupId !== TITLE_GROUP_ID) {
+    return; // 只在配置的群中启用头衔功能
+  }
+
+  const msg = {
+    action: 'set_group_special_title',
+    params: {
+      group_id: parseInt(groupId),
+      user_id: parseInt(userId),
+      special_title: title,
+      duration // -1 表示永久
+    }
+  };
+  ws.send(JSON.stringify(msg));
+  console.log(`设置群头衔: ${userId} -> ${title}`);
+}
+
+// 清除群头衔
+function clearGroupTitle(ws: WebSocket, groupId: string, userId: string): void {
+  setGroupTitle(ws, groupId, userId, '', -1);
+}
+
+// 更新每日第一头衔
+async function updateDailyTopTitle(ws: WebSocket): Promise<void> {
+  if (!TITLE_GROUP_ID) return;
+
+  const today = getTodayStart();
+
+  // 获取今日排行榜
+  const todayRanking = await prisma.checkin.groupBy({
+    by: ['userId'],
+    where: {
+      createdAt: { gte: today },
+      isLoan: false
+    },
+    _sum: { duration: true },
+    orderBy: { _sum: { duration: 'desc' } },
+    take: 1
+  });
+
+  if (todayRanking.length === 0 || !todayRanking[0]._sum.duration) {
+    return; // 今天还没有人打卡
+  }
+
+  const topUser = await prisma.user.findUnique({
+    where: { id: todayRanking[0].userId }
+  });
+
+  if (topUser && todayRanking[0]._sum.duration > 0) {
+    setGroupTitle(ws, TITLE_GROUP_ID, topUser.qqNumber, '今日第一🥇', -1);
+  }
+}
+
+// 更新打卡老赖头衔
+async function updateDebtTitle(ws: WebSocket, userId: number, debt: number): Promise<void> {
+  if (!TITLE_GROUP_ID) return;
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId }
+  });
+
+  if (!user) return;
+
+  if (debt >= DEBT_THRESHOLD) {
+    // 负债超过阈值，设置老赖头衔
+    setGroupTitle(ws, TITLE_GROUP_ID, user.qqNumber, '打卡老赖💸', -1);
+  } else if (debt === 0) {
+    // 负债已清零，清除头衔（如果当前是老赖头衔的话）
+    // 这里简化处理，直接清除，让其他头衔系统接管
+    // clearGroupTitle(ws, TITLE_GROUP_ID, user.qqNumber);
+  }
+}
+
+// 更新每周前三头衔
+async function updateWeeklyTopTitles(ws: WebSocket): Promise<void> {
+  if (!TITLE_GROUP_ID) return;
+
+  const weekStart = getWeekStart();
+
+  // 获取本周排行榜前三
+  const weeklyRanking = await prisma.checkin.groupBy({
+    by: ['userId'],
+    where: {
+      createdAt: { gte: weekStart },
+      isLoan: false
+    },
+    _sum: { duration: true },
+    orderBy: { _sum: { duration: 'desc' } },
+    take: 3
+  });
+
+  // 设置前三名头衔
+  const titles = ['周榜第一🥇', '周榜第二🥈', '周榜第三🥉'];
+
+  for (let i = 0; i < weeklyRanking.length; i++) {
+    const entry = weeklyRanking[i];
+    if (!entry._sum.duration || entry._sum.duration === 0) continue;
+
+    const user = await prisma.user.findUnique({
+      where: { id: entry.userId }
+    });
+
+    if (user) {
+      setGroupTitle(ws, TITLE_GROUP_ID, user.qqNumber, titles[i], -1);
+    }
+  }
+}
+
 // 检查管理员今日是否打卡
 async function checkAdminCheckin(): Promise<boolean> {
   if (!SUPER_ADMIN_QQ) return true;
@@ -1980,10 +2138,35 @@ function connectBot() {
 
   const ws = new WebSocket(WS_URL);
 
-  ws.on('open', () => {
+  ws.on('open', async () => {
     console.log('✅ 已连接到 NapCat');
+
     // 启动打卡督促定时器
     startReminderTimer(ws);
+
+    // 初始化头衔系统：立即更新一次每周前三
+    if (TITLE_GROUP_ID) {
+      await updateWeeklyTopTitles(ws);
+      console.log('已初始化每周前三头衔');
+
+      // 启动每日定时器，每天0点更新每周前三头衔
+      const scheduleWeeklyTitleUpdate = () => {
+        const now = new Date();
+        const tomorrow = new Date(now);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        tomorrow.setHours(0, 0, 0, 0);
+        const delay = tomorrow.getTime() - now.getTime();
+
+        setTimeout(async () => {
+          await updateWeeklyTopTitles(ws);
+          console.log('已更新每周前三头衔');
+          scheduleWeeklyTitleUpdate(); // 递归调度下一次更新
+        }, delay);
+      };
+
+      scheduleWeeklyTitleUpdate();
+      console.log('每周头衔定时器已启动');
+    }
   });
 
   ws.on('message', async (data) => {
