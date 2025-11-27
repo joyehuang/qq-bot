@@ -59,14 +59,17 @@ const WS_URL = process.env.WS_URL || 'ws://localhost:6100';
 const prisma = new PrismaClient();
 
 // 版本信息
-const VERSION = 'v1.0.0';
+const VERSION = 'v1.1.0';
 const VERSION_FEATURES = [
   '打卡记录与贷款打卡',
   '排行榜（今日/本周/总榜）',
   '成就系统（10种成就）',
   '每日目标设置',
-  'AI 个性化分析',
-  '周报功能'
+  'AI 风格系统（5种风格）',
+  '群头衔系统（自动管理）',
+  'AI 个性化分析与周报',
+  '查看他人打卡记录',
+  '撤销打卡功能'
 ];
 
 // AI 配置
