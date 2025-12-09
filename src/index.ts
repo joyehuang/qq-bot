@@ -59,13 +59,14 @@ const WS_URL = process.env.WS_URL || 'ws://localhost:6100';
 const prisma = new PrismaClient();
 
 // 版本信息
-const VERSION = 'v1.1.0';
+const VERSION = 'v1.2.0';
 const VERSION_FEATURES = [
   '打卡记录与贷款打卡',
   '排行榜（今日/本周/总榜）',
   '成就系统（10种成就）',
   '每日目标设置',
   'AI 风格系统（5种风格）',
+  'AI 智能分类（自动识别学习内容）',
   '群头衔系统（自动管理）',
   'AI 个性化分析与周报',
   '查看他人打卡记录',
@@ -112,6 +113,107 @@ async function callAI(systemPrompt: string, userPrompt: string): Promise<string 
     console.error('AI 调用失败:', error);
     return null;
   }
+}
+
+// AI 自动分类打卡内容
+interface ClassificationResult {
+  category: string;      // 一级分类：学习、工作、运动、娱乐、其他
+  subcategory: string;   // 二级分类：计算机、英语、其他学习等
+}
+
+async function classifyCheckin(content: string): Promise<ClassificationResult> {
+  // 快速关键词匹配（常见模式）
+  const contentLower = content.toLowerCase();
+
+  // 计算机相关关键词
+  const computerKeywords = {
+    '算法': ['算法', '刷题', 'leetcode', 'lc', '数据结构', '竞赛', 'acm', 'oi'],
+    '前端': ['前端', 'html', 'css', 'javascript', 'js', 'react', 'vue', 'angular', 'ui', 'ux', '页面', '组件'],
+    '后端': ['后端', 'api', 'node', 'java', 'python', 'go', 'rust', '服务器', '接口', '微服务', 'spring', 'django', 'flask'],
+    '数据库': ['数据库', 'sql', 'mysql', 'postgresql', 'mongodb', 'redis', 'database', 'db'],
+    '系统设计': ['架构', '系统设计', '分布式', '高并发', '设计模式', '微服务架构'],
+    'DevOps': ['docker', 'kubernetes', 'k8s', 'ci/cd', 'jenkins', '部署', 'devops', '运维'],
+    '计算机基础': ['网络', '操作系统', 'os', 'tcp', 'http', '编译原理', '计算机组成']
+  };
+
+  // 英语相关关键词
+  const englishKeywords = {
+    '听力': ['听力', '听播客', '美剧', '听懂', 'listening', '听写', '精听', '泛听'],
+    '口语': ['口语', '说', '对话', '演讲', 'speaking', '配音', '聊天', '交流'],
+    '阅读': ['阅读', '读', '文章', 'reading', '读书', '英文书'],
+    '写作': ['写作', '作文', 'writing', '写', '邮件', '翻译'],
+    '词汇': ['单词', '词汇', '背单词', 'vocabulary', '词根', '词缀'],
+    '语法': ['语法', 'grammar', '时态', '句式', '从句'],
+    '考试': ['雅思', 'ielts', '托福', 'toefl', '四级', '六级', 'cet', '考试']
+  };
+
+  // 检查计算机相关
+  for (const [subcat, keywords] of Object.entries(computerKeywords)) {
+    if (keywords.some(kw => contentLower.includes(kw))) {
+      return { category: '学习', subcategory: `计算机·${subcat}` };
+    }
+  }
+
+  // 检查英语相关
+  for (const [subcat, keywords] of Object.entries(englishKeywords)) {
+    if (keywords.some(kw => contentLower.includes(kw))) {
+      return { category: '学习', subcategory: `英语·${subcat}` };
+    }
+  }
+
+  // 其他快速匹配
+  const workKeywords = ['工作', '项目', '开发', '写代码', '写文档', '开会', '会议', 'bug', '修复'];
+  const exerciseKeywords = ['运动', '跑步', '健身', '锻炼', '瑜伽', '游泳', '篮球', '足球', '羽毛球', '乒乓球'];
+  const entertainmentKeywords = ['游戏', '追剧', '电影', '娱乐', '放松', '玩', '社交'];
+
+  if (workKeywords.some(kw => contentLower.includes(kw))) {
+    return { category: '工作', subcategory: '' };
+  }
+  if (exerciseKeywords.some(kw => contentLower.includes(kw))) {
+    return { category: '运动', subcategory: '' };
+  }
+  if (entertainmentKeywords.some(kw => contentLower.includes(kw))) {
+    return { category: '娱乐', subcategory: '' };
+  }
+
+  // 无法快速匹配，调用 AI 分类
+  if (!AI_API_KEY) {
+    return { category: '其他', subcategory: '' };
+  }
+
+  const systemPrompt = `你是一个智能分类助手。根据用户的打卡内容，判断它属于哪个分类。
+
+分类规则：
+1. 学习类：
+   - 计算机相关（算法、前端、后端、数据库、系统设计、DevOps、计算机基础）
+   - 英语相关（听力、口语、阅读、写作、词汇、语法、考试）
+   - 其他学习（数学、物理、专业课等）
+
+2. 工作类：工作项目、开发任务、写文档、开会等
+
+3. 运动类：各种运动健身活动
+
+4. 娱乐类：游戏、追剧、社交娱乐等
+
+5. 其他：无法明确分类的内容
+
+输出格式：只返回 JSON，格式为 {"category": "学习", "subcategory": "计算机·算法"}
+如果是工作/运动/娱乐/其他，subcategory 为空字符串。`;
+
+  const userPrompt = `请分类以下打卡内容：\n${content}`;
+
+  try {
+    const aiResponse = await callAI(systemPrompt, userPrompt);
+    if (aiResponse) {
+      const result = JSON.parse(aiResponse.trim());
+      return result;
+    }
+  } catch (error) {
+    console.error('AI 分类解析失败:', error);
+  }
+
+  // AI 调用失败，返回其他
+  return { category: '其他', subcategory: '' };
 }
 
 // 生成 AI 鼓励语
@@ -799,7 +901,7 @@ async function handleCheckin(
     const debtBefore = await getUserDebt(user.id);
 
     // 创建打卡记录
-    await prisma.checkin.create({
+    const checkin = await prisma.checkin.create({
       data: {
         userId: user.id,
         groupId,
@@ -808,6 +910,23 @@ async function handleCheckin(
         isLoan
       }
     });
+
+    // 异步分类（不阻塞响应）
+    (async () => {
+      try {
+        const classification = await classifyCheckin(content);
+        await prisma.checkin.update({
+          where: { id: checkin.id },
+          data: {
+            category: classification.category,
+            subcategory: classification.subcategory
+          }
+        });
+        console.log(`✅ 打卡分类完成: ${content} → ${classification.category}${classification.subcategory ? '/' + classification.subcategory : ''}`);
+      } catch (error) {
+        console.error('分类失败:', error);
+      }
+    })();
 
     // 获取打卡后的负债
     const debtAfter = await getUserDebt(user.id);
@@ -1088,8 +1207,73 @@ async function handleCheckinStats(
     recentCheckins.forEach((c: Checkin, i: number) => {
       const date = c.createdAt.toLocaleDateString('zh-CN');
       const loanMark = c.isLoan ? ' 💸' : '';
-      message += `${i + 1}. ${date} - ${c.duration}分钟 - ${c.content}${loanMark}\n`;
+      const categoryMark = c.subcategory ? `【${c.subcategory}】` : (c.category ? `【${c.category}】` : '');
+      message += `${i + 1}. ${date} - ${c.duration}分钟 ${categoryMark}- ${c.content}${loanMark}\n`;
     });
+
+    // 获取本周分类统计
+    const weekStart = getWeekStart();
+    const weekCheckins = await prisma.checkin.findMany({
+      where: {
+        userId: user.id,
+        createdAt: { gte: weekStart },
+        isLoan: false
+      }
+    });
+
+    // 按分类汇总
+    const categoryStats: Record<string, { minutes: number; subcategories: Record<string, number> }> = {};
+    let totalWeekMinutes = 0;
+
+    weekCheckins.forEach(c => {
+      if (!c.category) return;
+
+      totalWeekMinutes += c.duration;
+
+      if (!categoryStats[c.category]) {
+        categoryStats[c.category] = { minutes: 0, subcategories: {} };
+      }
+
+      categoryStats[c.category].minutes += c.duration;
+
+      if (c.subcategory) {
+        if (!categoryStats[c.category].subcategories[c.subcategory]) {
+          categoryStats[c.category].subcategories[c.subcategory] = 0;
+        }
+        categoryStats[c.category].subcategories[c.subcategory] += c.duration;
+      }
+    });
+
+    // 显示分类统计
+    if (Object.keys(categoryStats).length > 0 && totalWeekMinutes > 0) {
+      message += `\n📚 本周分类统计:\n`;
+
+      // 按时长排序
+      const sortedCategories = Object.entries(categoryStats)
+        .sort((a, b) => b[1].minutes - a[1].minutes);
+
+      sortedCategories.forEach(([category, data]) => {
+        const percentage = Math.round((data.minutes / totalWeekMinutes) * 100);
+        const barLength = Math.floor(percentage / 10);
+        const bar = '▓'.repeat(barLength) + '░'.repeat(10 - barLength);
+
+        message += `├─ ${category} ${formatDuration(data.minutes)} (${percentage}%)\n`;
+        message += `│  ${bar}\n`;
+
+        // 显示子分类
+        const sortedSubcats = Object.entries(data.subcategories)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 3); // 只显示前3个子分类
+
+        if (sortedSubcats.length > 0) {
+          sortedSubcats.forEach(([subcat, mins], idx) => {
+            const isLast = idx === sortedSubcats.length - 1;
+            const prefix = isLast ? '└─' : '├─';
+            message += `│  ${prefix} ${subcat}: ${formatDuration(mins)}\n`;
+          });
+        }
+      });
+    }
 
     // 生成 AI 分析
     const aiAnalysis = await generateAIAnalysis(user.id, user.nickname, user.aiStyle);
@@ -1539,6 +1723,68 @@ async function handleWeeklyReport(
       message += `\n🎯 主要内容\n`;
       data.topContents.forEach((content, i) => {
         message += `${i + 1}. ${content}\n`;
+      });
+    }
+
+    // 分类统计
+    const weekStart = getWeekStart();
+    const weekCheckins = await prisma.checkin.findMany({
+      where: {
+        userId: user.id,
+        createdAt: { gte: weekStart },
+        isLoan: false
+      }
+    });
+
+    // 按分类汇总
+    const categoryStats: Record<string, { minutes: number; subcategories: Record<string, number> }> = {};
+    let totalWeekMinutes = 0;
+
+    weekCheckins.forEach(c => {
+      if (!c.category) return;
+
+      totalWeekMinutes += c.duration;
+
+      if (!categoryStats[c.category]) {
+        categoryStats[c.category] = { minutes: 0, subcategories: {} };
+      }
+
+      categoryStats[c.category].minutes += c.duration;
+
+      if (c.subcategory) {
+        if (!categoryStats[c.category].subcategories[c.subcategory]) {
+          categoryStats[c.category].subcategories[c.subcategory] = 0;
+        }
+        categoryStats[c.category].subcategories[c.subcategory] += c.duration;
+      }
+    });
+
+    // 显示分类分布
+    if (Object.keys(categoryStats).length > 0 && totalWeekMinutes > 0) {
+      message += `\n📚 学习分布\n`;
+
+      // 按时长排序
+      const sortedCategories = Object.entries(categoryStats)
+        .sort((a, b) => b[1].minutes - a[1].minutes);
+
+      sortedCategories.forEach(([category, data]) => {
+        const percentage = Math.round((data.minutes / totalWeekMinutes) * 100);
+        const barLength = Math.floor(percentage / 10);
+        const bar = '▓'.repeat(barLength) + '░'.repeat(10 - barLength);
+
+        message += `${category} ${percentage}% ${bar}\n`;
+
+        // 显示TOP 2子分类
+        const sortedSubcats = Object.entries(data.subcategories)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 2);
+
+        if (sortedSubcats.length > 0) {
+          sortedSubcats.forEach(([subcat, mins]) => {
+            const subcatPercentage = Math.round((mins / totalWeekMinutes) * 100);
+            message += `  ├─ ${subcat} ${subcatPercentage}%\n`;
+          });
+        }
       });
     }
 

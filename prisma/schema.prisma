@@ -31,13 +31,15 @@ model User {
 
 // 打卡记录表
 model Checkin {
-  id        Int      @id @default(autoincrement())
-  userId    Int      @map("user_id")
-  groupId   String   @map("group_id")
-  duration  Int      // 时长（分钟）
-  content   String   // 打卡内容
-  isLoan    Boolean  @default(false) @map("is_loan") // 是否是贷款打卡
-  createdAt DateTime @default(now()) @map("created_at")
+  id          Int      @id @default(autoincrement())
+  userId      Int      @map("user_id")
+  groupId     String   @map("group_id")
+  duration    Int      // 时长（分钟）
+  content     String   // 打卡内容
+  isLoan      Boolean  @default(false) @map("is_loan") // 是否是贷款打卡
+  category    String?  // 一级分类：学习、工作、运动、娱乐、其他
+  subcategory String?  // 二级分类：计算机、英语、其他学习等
+  createdAt   DateTime @default(now()) @map("created_at")
 
   user User @relation(fields: [userId], references: [id])
 
