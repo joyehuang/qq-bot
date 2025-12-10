@@ -900,33 +900,27 @@ async function handleCheckin(
     // 获取打卡前的负债
     const debtBefore = await getUserDebt(user.id);
 
-    // 创建打卡记录
+    // 同步分类（打卡时立即分类）
+    let classification = { category: '', subcategory: '' };
+    try {
+      classification = await classifyCheckin(content);
+      console.log(`✅ 打卡分类: ${content} → ${classification.category}${classification.subcategory ? '/' + classification.subcategory : ''}`);
+    } catch (error) {
+      console.error('分类失败:', error);
+    }
+
+    // 创建打卡记录（包含分类信息）
     const checkin = await prisma.checkin.create({
       data: {
         userId: user.id,
         groupId,
         duration,
         content,
-        isLoan
+        isLoan,
+        category: classification.category || null,
+        subcategory: classification.subcategory || null
       }
     });
-
-    // 异步分类（不阻塞响应）
-    (async () => {
-      try {
-        const classification = await classifyCheckin(content);
-        await prisma.checkin.update({
-          where: { id: checkin.id },
-          data: {
-            category: classification.category,
-            subcategory: classification.subcategory
-          }
-        });
-        console.log(`✅ 打卡分类完成: ${content} → ${classification.category}${classification.subcategory ? '/' + classification.subcategory : ''}`);
-      } catch (error) {
-        console.error('分类失败:', error);
-      }
-    })();
 
     // 获取打卡后的负债
     const debtAfter = await getUserDebt(user.id);
@@ -994,6 +988,15 @@ async function handleCheckin(
       const randomMsg = messagePool[Math.floor(Math.random() * messagePool.length)];
 
       const forWhomPrefix = isForOthers ? `已为 ${user.nickname} 贷款打卡\n\n` : '';
+
+      // 构建分类标签
+      let categoryTag = '';
+      if (classification.subcategory) {
+        categoryTag = `【${classification.subcategory}】`;
+      } else if (classification.category) {
+        categoryTag = `【${classification.category}】`;
+      }
+
       // 更新头衔
       await updateDebtTitle(ws, user.id, debtAfter);
       await updateDailyTopTitle(ws);
@@ -1002,7 +1005,7 @@ async function handleCheckin(
         ws,
         event,
         forWhomPrefix +
-        `💸 贷款打卡成功！\n` +
+        `💸 贷款打卡成功！${categoryTag ? ' ' + categoryTag : ''}\n` +
         `📝 内容: ${content}\n` +
         `⏱️ 借款时长: ${formatDuration(duration)}\n` +
         `📊 当前负债: ${formatDuration(debtAfter)}\n` +
@@ -1011,8 +1014,17 @@ async function handleCheckin(
     } else {
       // 正常打卡的回复
       const forWhomPrefix = isForOthers ? `已为 ${user.nickname} 打卡\n\n` : '';
+
+      // 构建分类标签
+      let categoryTag = '';
+      if (classification.subcategory) {
+        categoryTag = `【${classification.subcategory}】`;
+      } else if (classification.category) {
+        categoryTag = `【${classification.category}】`;
+      }
+
       let replyMsg = forWhomPrefix +
-        `✅ 打卡成功！\n` +
+        `✅ 打卡成功！${categoryTag ? ' ' + categoryTag : ''}\n` +
         `📝 内容: ${content}\n` +
         `⏱️ 时长: ${formatDuration(duration)}\n`;
 
