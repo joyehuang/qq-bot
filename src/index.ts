@@ -365,6 +365,9 @@ async function generateAIAnalysis(userId: number, nickname: string, aiStyle: str
 // 超级管理员QQ号（从环境变量读取，不可被删除）
 const SUPER_ADMIN_QQ = process.env.ADMIN_QQ || '';
 
+// 测试模式（仅超级管理员可切换，测试模式下打卡不会保存到数据库）
+let testMode = false;
+
 // 督促打卡配置
 const REMINDER_GROUP_ID = process.env.REMINDER_GROUP_ID || ''; // 督促消息发送的群号
 const REMINDER_HOUR = parseInt(process.env.REMINDER_HOUR || '19'); // 督促时间（小时，24小时制）
@@ -897,17 +900,56 @@ async function handleCheckin(
       // 这里暂时保持不变，除非有更好的方式获取群成员昵称
     }
 
-    // 获取打卡前的负债
-    const debtBefore = await getUserDebt(user.id);
-
     // 同步分类（打卡时立即分类）
     let classification = { category: '', subcategory: '' };
     try {
       classification = await classifyCheckin(content);
-      console.log(`✅ 打卡分类: ${content} → ${classification.category}${classification.subcategory ? '/' + classification.subcategory : ''}`);
+      const testPrefix = testMode ? '[测试] ' : '';
+      console.log(`${testPrefix}✅ 打卡分类: ${content} → ${classification.category}${classification.subcategory ? '/' + classification.subcategory : ''}`);
     } catch (error) {
       console.error('分类失败:', error);
     }
+
+    // 测试模式：不保存到数据库
+    if (testMode) {
+      // 构建分类标签
+      let categoryTag = '';
+      if (classification.subcategory) {
+        categoryTag = `【${classification.subcategory}】`;
+      } else if (classification.category) {
+        categoryTag = `【${classification.category}】`;
+      }
+
+      const testModePrefix = '🧪 【测试模式】\n';
+      const forWhomPrefix = isForOthers ? `已为 ${user.nickname} 打卡\n\n` : '';
+
+      if (isLoan) {
+        sendReply(
+          ws,
+          event,
+          testModePrefix + forWhomPrefix +
+          `💸 贷款打卡！${categoryTag ? ' ' + categoryTag : ''}\n` +
+          `📝 内容: ${content}\n` +
+          `⏱️ 借款时长: ${formatDuration(duration)}\n\n` +
+          `⚠️ 测试模式下，此记录不会保存到数据库`
+        );
+      } else {
+        sendReply(
+          ws,
+          event,
+          testModePrefix + forWhomPrefix +
+          `✅ 打卡成功！${categoryTag ? ' ' + categoryTag : ''}\n` +
+          `📝 内容: ${content}\n` +
+          `⏱️ 时长: ${formatDuration(duration)}\n\n` +
+          `⚠️ 测试模式下，此记录不会保存到数据库`
+        );
+      }
+      return;
+    }
+
+    // 正常模式：保存到数据库
+    // 获取打卡前的负债
+    const debtBefore = await getUserDebt(user.id);
 
     // 创建打卡记录（包含分类信息）
     const checkin = await prisma.checkin.create({
@@ -2650,6 +2692,24 @@ function connectBot() {
           }
           break;
 
+        case '测试模式':
+        case 'test':
+        case '测试':
+          if (!isSuperAdmin) {
+            sendReply(ws, event, '只有超级管理员才能切换测试模式');
+            break;
+          }
+          // 切换测试模式
+          testMode = !testMode;
+          if (testMode) {
+            sendReply(ws, event, '🧪 已开启测试模式\n\n所有打卡记录将不会保存到数据库，可用于测试 AI 分类等功能。\n\n发送「测试模式」可退出测试模式。');
+            console.log('⚠️ 测试模式已开启');
+          } else {
+            sendReply(ws, event, '✅ 已关闭测试模式\n\n打卡记录将正常保存到数据库。');
+            console.log('✅ 测试模式已关闭');
+          }
+          break;
+
         case '督促':
         case '测试督促':
           if (!isSuperAdmin) {
@@ -2849,6 +2909,7 @@ function connectBot() {
 
           if (isSuperAdmin) {
             helpMsg += '\n\n⭐ 超管命令:\n' +
+              '测试模式 - 切换测试模式（打卡不保存）\n' +
               '添加管理 [QQ] - 添加管理员\n' +
               '删除管理 [QQ] - 删除管理员\n' +
               '督促 - 测试打卡督促\n' +
