@@ -372,7 +372,7 @@ let testMode = false;
 const REMINDER_GROUP_ID = process.env.REMINDER_GROUP_ID || ''; // 督促消息发送的群号
 const REMINDER_HOUR = parseInt(process.env.REMINDER_HOUR || '19'); // 督促时间（小时，24小时制）
 const REMINDER_MINUTE = parseInt(process.env.REMINDER_MINUTE || '0'); // 督促时间（分钟）
-const REMINDER_TIMEZONE = process.env.REMINDER_TIMEZONE || 'Australia/Melbourne'; // 时区
+const REMINDER_TIMEZONE = process.env.REMINDER_TIMEZONE || 'Asia/Shanghai'; // 时区
 
 // 断签提醒配置
 const STREAK_WARNING_HOUR = parseInt(process.env.STREAK_WARNING_HOUR || '21'); // 断签警告时间（小时）

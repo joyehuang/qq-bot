@@ -263,7 +263,7 @@
 
 机器人会在每天指定时间检查超级管理员是否已打卡，如未打卡则在群里 @提醒。
 
-- 默认时间：墨尔本时间 19:00
+- 默认时间：北京时间 19:00
 - 可通过环境变量自定义时间和时区
 
 ### 断签提醒（v1.2.1+）
@@ -306,7 +306,7 @@ ADMIN_QQ="你的QQ号"
 REMINDER_GROUP_ID="群号"           # 督促消息发送的群
 REMINDER_HOUR="19"                 # 督促时间（小时，24小时制）
 REMINDER_MINUTE="0"                # 督促时间（分钟）
-REMINDER_TIMEZONE="Australia/Melbourne"  # 时区
+REMINDER_TIMEZONE="Asia/Shanghai"  # 时区（默认北京时间）
 
 # 断签提醒配置
 STREAK_WARNING_HOUR="21"           # 断签警告时间（小时，默认21点）
