@@ -374,11 +374,10 @@ const REMINDER_HOUR = parseInt(process.env.REMINDER_HOUR || '19'); // 督促时�
 const REMINDER_MINUTE = parseInt(process.env.REMINDER_MINUTE || '0'); // 督促时间（分钟）
 const REMINDER_TIMEZONE = process.env.REMINDER_TIMEZONE || 'Asia/Shanghai'; // 时区
 
-// 断签提醒配置
-const STREAK_WARNING_HOUR = parseInt(process.env.STREAK_WARNING_HOUR || '21'); // 断签警告时间（小时）
-const STREAK_WARNING_MINUTE = parseInt(process.env.STREAK_WARNING_MINUTE || '0'); // 断签警告时间（分钟）
+// 断签调侃配置
 const STREAK_TAUNT_HOUR = parseInt(process.env.STREAK_TAUNT_HOUR || '9'); // 断签调侃时间（小时）
 const STREAK_TAUNT_MINUTE = parseInt(process.env.STREAK_TAUNT_MINUTE || '0'); // 断签调侃时间（分钟）
+const MIN_STREAK_FOR_TAUNT = 5; // 最少连续打卡天数才会被调侃
 
 // GitHub 配置
 const GITHUB_USERNAME = process.env.GITHUB_USERNAME || '';
@@ -2376,14 +2375,14 @@ async function checkAdminCheckin(): Promise<boolean> {
   return !!todayCheckin;
 }
 
-// 检查所有用户的断签情况
+// 检查所有用户的断签情况（只检查连续打卡>=5天的用户）
 async function checkStreakBreaks(): Promise<{ userId: number; qqNumber: string; nickname: string; brokenStreak: number }[]> {
   const brokenUsers: { userId: number; qqNumber: string; nickname: string; brokenStreak: number }[] = [];
 
-  // 获取所有有连续打卡记录的用户
+  // 获取所有连续打卡>=5天的用户
   const usersWithStreak = await prisma.user.findMany({
     where: {
-      streakDays: { gt: 0 }
+      streakDays: { gte: MIN_STREAK_FOR_TAUNT }
     }
   });
 
@@ -2421,44 +2420,6 @@ async function checkStreakBreaks(): Promise<{ userId: number; qqNumber: string; 
   return brokenUsers;
 }
 
-// 检查今天还没打卡但有连续打卡记录的用户（避免断签提醒）
-async function checkPotentialStreakBreaks(): Promise<{ userId: number; qqNumber: string; nickname: string; currentStreak: number }[]> {
-  const potentialBreaks: { userId: number; qqNumber: string; nickname: string; currentStreak: number }[] = [];
-
-  // 获取所有有连续打卡记录的用户
-  const usersWithStreak = await prisma.user.findMany({
-    where: {
-      streakDays: { gt: 0 }
-    }
-  });
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  for (const user of usersWithStreak) {
-    // 检查今天是否打卡
-    const todayCheckin = await prisma.checkin.findFirst({
-      where: {
-        userId: user.id,
-        createdAt: { gte: today },
-        isLoan: false
-      }
-    });
-
-    // 如果今天还没打卡，加入提醒列表
-    if (!todayCheckin) {
-      potentialBreaks.push({
-        userId: user.id,
-        qqNumber: user.qqNumber,
-        nickname: user.nickname,
-        currentStreak: user.streakDays
-      });
-    }
-  }
-
-  return potentialBreaks;
-}
-
 // 获取下次定时任务时间（毫秒）
 function getNextScheduledTime(hour: number, minute: number): number {
   const now = new Date();
@@ -2476,53 +2437,6 @@ function getNextScheduledTime(hour: number, minute: number): number {
   const diff = scheduledTime.getTime() - nowInTimezone.getTime();
 
   return diff;
-}
-
-// 断签警告定时器
-let streakWarningTimer: NodeJS.Timeout | null = null;
-
-function startStreakWarningTimer(ws: WebSocket): void {
-  if (!REMINDER_GROUP_ID) {
-    console.log('断签警告功能未配置（需要 REMINDER_GROUP_ID）');
-    return;
-  }
-
-  const scheduleNextWarning = () => {
-    const delay = getNextScheduledTime(STREAK_WARNING_HOUR, STREAK_WARNING_MINUTE);
-    const nextTime = new Date(Date.now() + delay);
-
-    console.log(`下次断签警告时间: ${nextTime.toLocaleString('zh-CN', { timeZone: REMINDER_TIMEZONE })} (${REMINDER_TIMEZONE})`);
-
-    streakWarningTimer = setTimeout(async () => {
-      try {
-        const potentialBreaks = await checkPotentialStreakBreaks();
-
-        if (potentialBreaks.length > 0 && botEnabled) {
-          const warningMessages = [
-            (user: any) => `[CQ:at,qq=${user.qqNumber}] 你已经连续打卡 ${user.currentStreak} 天了！今天还没打卡哦，再不打卡连续记录就要断啦！💔`,
-            (user: any) => `[CQ:at,qq=${user.qqNumber}] ${user.currentStreak} 天的努力要白费了？快来打卡！⏰`,
-            (user: any) => `[CQ:at,qq=${user.qqNumber}] 连续 ${user.currentStreak} 天打卡，就差今天了！别让前功尽弃啊～ 🔥`,
-            (user: any) => `[CQ:at,qq=${user.qqNumber}] 警告⚠️ 你的 ${user.currentStreak} 天连续打卡即将归零！快来拯救一下！`
-          ];
-
-          for (const user of potentialBreaks) {
-            const randomMsg = warningMessages[Math.floor(Math.random() * warningMessages.length)](user);
-            sendGroupMessage(ws, REMINDER_GROUP_ID, randomMsg);
-            await new Promise(resolve => setTimeout(resolve, 1000)); // 间隔1秒避免刷屏
-          }
-          console.log(`已发送断签警告消息给 ${potentialBreaks.length} 位用户`);
-        } else if (potentialBreaks.length === 0) {
-          console.log('所有有连续打卡的用户今天都已打卡 ✅');
-        }
-      } catch (error) {
-        console.error('断签警告检查失败:', error);
-      }
-
-      scheduleNextWarning();
-    }, delay);
-  };
-
-  scheduleNextWarning();
 }
 
 // 断签调侃定时器
@@ -2650,8 +2564,7 @@ function connectBot() {
     // 启动打卡督促定时器
     startReminderTimer(ws);
 
-    // 启动断签提醒定时器
-    startStreakWarningTimer(ws);
+    // 启动断签调侃定时器
     startStreakTauntTimer(ws);
 
     // 初始化头衔系统：立即更新一次每周前三
