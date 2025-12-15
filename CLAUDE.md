@@ -14,17 +14,65 @@
 
 ## 项目结构
 
-- `src/index.ts` - 主程序入口
+- `src/index.ts` - 主程序入口（Bot 主程序）
+- `admin/server/` - 管理后台 API 服务（Express + TypeScript）
+- `admin/web/` - 管理后台前端（Vue 3 + TypeScript + Vite）
 - `prisma/` - 数据库 schema 和迁移
 - `napcat/` - NapCat 配置文件
 - `COMMANDS.md` - **指令文档（新增/删除指令时必须同步更新）**
 
+## TypeScript 开发规范
+
+### ⚠️ 类型导入规范（重要）
+
+**所有从第三方库导入的 TypeScript 类型定义，必须使用 `import type` 语法！**
+
+❌ **错误写法**：
+```typescript
+// 错误：将类型和运行时值混合导入
+import axios, { AxiosError, AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
+import { createRouter, createWebHistory, RouteRecordRaw } from 'vue-router';
+```
+
+✅ **正确写法**：
+```typescript
+// 正确：分离类型导入
+import axios from 'axios';
+import type { AxiosError, AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
+
+import { createRouter, createWebHistory } from 'vue-router';
+import type { RouteRecordRaw } from 'vue-router';
+```
+
+**原因**：
+- Vite 在浏览器运行时会尝试查找导入的导出项
+- TypeScript 类型（如 `AxiosInstance`、`RouteRecordRaw`）不会在运行时存在
+- 如果不使用 `import type`，会导致运行时错误：`does not provide an export named 'XXX'`
+
+**判断方法**：
+- **运行时值**（函数、类、对象）→ 使用普通 `import`
+  - 例如：`axios`、`createRouter`、`createWebHistory`、`ref`、`computed`
+- **纯类型**（interface、type、泛型参数）→ 使用 `import type`
+  - 例如：`AxiosInstance`、`RouteRecordRaw`、`Ref`、`ComputedRef`
+
 ## 开发命令
 
+### Bot 主程序
 ```bash
 # 启动开发
 npx ts-node src/index.ts
 
 # 数据库迁移
 npx prisma migrate dev
+```
+
+### 管理后台
+```bash
+# 启动后端 API（端口 3001）
+cd admin/server
+npm run dev
+
+# 启动前端（端口 5173/5174）
+cd admin/web
+npm run dev
 ```

@@ -79,7 +79,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted, onUnmounted } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import {
   DataAnalysis,
@@ -99,6 +99,25 @@ const router = useRouter();
 const route = useRoute();
 const authStore = useAuthStore();
 const appStore = useAppStore();
+
+// 响应式布局：移动端自动折叠侧边栏
+const handleResize = () => {
+  const isMobile = window.innerWidth < 768;
+  if (isMobile && !appStore.sidebarCollapsed) {
+    appStore.setSidebarCollapsed(true);
+  }
+};
+
+onMounted(() => {
+  // 初始化时检查
+  handleResize();
+  // 监听窗口大小变化
+  window.addEventListener('resize', handleResize);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('resize', handleResize);
+});
 
 // 菜单项配置
 const menuItems = [

@@ -224,7 +224,7 @@ router.get('/export/csv', async (req: AuthRequest, res: Response) => {
 
     // 生成 CSV
     const csvHeader = 'ID,用户,QQ号,内容,时长(分钟),是否贷款,分类,子分类,日期\n';
-    const csvRows = checkins.map((c: any) => {
+    const csvRows = checkins.map((c) => {
       return [
         c.id,
         c.user.nickname,
