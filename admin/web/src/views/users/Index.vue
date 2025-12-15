@@ -70,7 +70,8 @@
 
         <el-table-column label="每日目标" width="120">
           <template #default="{ row }">
-            {{ formatDuration(row.dailyTarget) }}
+            <span v-if="row.dailyTarget">{{ formatDuration(row.dailyTarget) }}</span>
+            <span v-else class="text-placeholder">无目标</span>
           </template>
         </el-table-column>
 
@@ -221,6 +222,11 @@ onMounted(() => {
 
 .text-success {
   color: var(--color-success);
+  font-size: 12px;
+}
+
+.text-placeholder {
+  color: var(--text-color-placeholder);
   font-size: 12px;
 }
 

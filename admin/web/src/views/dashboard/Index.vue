@@ -33,7 +33,7 @@
               <el-icon><Clock /></el-icon>
             </div>
             <div class="stat-content">
-              <div class="stat-value">{{ formatDuration(stats?.totalDuration || 0) }}</div>
+              <div class="stat-value stat-value-duration">{{ formatDuration(stats?.totalDuration || 0) }}</div>
               <div class="stat-label">总时长</div>
             </div>
           </div>
@@ -369,6 +369,11 @@ onMounted(() => {
   font-weight: 600;
   color: var(--text-color-primary);
   margin-bottom: 4px;
+}
+
+.stat-value-duration {
+  font-size: 20px;
+  line-height: 1.4;
 }
 
 .stat-label {

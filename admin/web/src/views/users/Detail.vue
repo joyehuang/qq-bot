@@ -30,7 +30,8 @@
           <el-col :span="12">
             <div class="info-item">
               <span class="label">每日目标:</span>
-              <span class="value">{{ formatDuration(userDetail?.dailyTarget || 0) }}</span>
+              <span v-if="userDetail?.dailyTarget" class="value">{{ formatDuration(userDetail.dailyTarget) }}</span>
+              <span v-else class="value text-placeholder">无目标</span>
             </div>
             <div class="info-item">
               <span class="label">负债:</span>
