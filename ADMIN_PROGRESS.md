@@ -227,6 +227,77 @@ qq-bot/
 
 ---
 
+## ✅ 阶段 6：部署配置（完成）
+
+完成时间：2025-12-16
+
+### 完成的任务
+
+- [x] 6.1 Docker 配置
+  - [x] 创建 `admin/server/Dockerfile`
+    - Node.js 20 Alpine 镜像
+    - TypeScript 构建
+    - 生产依赖优化
+  - [x] 创建 `admin/web/Dockerfile`
+    - 多阶段构建（Node.js + Nginx）
+    - Vite 生产构建
+    - Nginx 静态文件服务
+  - [x] 创建 `admin/web/nginx.conf`
+    - SPA 路由支持
+    - Gzip 压缩
+    - 静态资源缓存策略
+    - 安全头配置
+
+- [x] 6.2 Docker Compose 配置
+  - [x] 更新 `docker-compose.yml`
+    - 添加 `admin-api` 服务（端口 3001）
+    - 添加 `admin-web` 服务（端口 8080）
+    - 配置环境变量
+    - 配置卷挂载（共享 Prisma 数据库）
+
+- [x] 6.3 构建优化
+  - [x] 创建 `.dockerignore` 文件（server 和 web）
+    - 排除 node_modules
+    - 排除开发环境文件
+    - 减少构建上下文大小
+
+- [x] 6.4 环境变量配置
+  - [x] `.env` 已包含所有必需的管理后台配置
+  - [x] `.env.development` 和 `.env.production` 已正确配置
+
+### 技术亮点
+
+- **多阶段构建**：前端使用 Node.js 构建，Nginx 运行，镜像体积小
+- **Nginx 优化**：Gzip 压缩、静态资源缓存、SPA 路由支持
+- **共享数据库**：admin-api 通过卷挂载访问 Bot 主程序的 Prisma 数据库
+- **端口映射**：
+  - admin-api: 3001 (外部可访问，用于开发调试)
+  - admin-web: 8080 (通过浏览器访问管理后台)
+
+### 部署说明
+
+#### 本地 Docker 部署测试
+```bash
+# 构建并启动所有服务（包括管理后台）
+docker-compose up -d --build
+
+# 只重启管理后台服务
+docker-compose up -d --build admin-api admin-web
+
+# 访问管理后台
+# 前端: http://localhost:8080
+# API: http://localhost:3001/health
+```
+
+#### 生产环境部署（待阶段 7）
+- 域名配置：
+  - 前端：`admin.joyehuang.me`
+  - API：`admin-api.joyehuang.me`
+- HTTPS 证书：Let's Encrypt
+- 反向代理：Nginx（服务器级别）
+
+---
+
 ## 📊 总体进度
 
 - ✅ 阶段 1: 项目基础搭建 (100%)
@@ -234,10 +305,10 @@ qq-bot/
 - ✅ 阶段 3: 前端基础开发 (100%)
 - ✅ 阶段 4: 前端页面开发 (100%)
 - ✅ 阶段 5: 功能完善和优化 (100%)
-- ⏳ 阶段 6: 部署配置 (0%)
+- ✅ 阶段 6: 部署配置 (100%)
 - ⏳ 阶段 7: 测试和上线 (0%)
 
-**总进度：71%**（5/7）
+**总进度：86%**（6/7）
 
 ---
 

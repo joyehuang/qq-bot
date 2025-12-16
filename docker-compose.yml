@@ -38,3 +38,28 @@ services:
       - AI_MODEL=${AI_MODEL:-Qwen/Qwen2.5-7B-Instruct}
     # 等待 napcat 启动后再连接
     command: sh -c "sleep 5 && npx ts-node src/index.ts"
+
+  admin-api:
+    build: ./admin/server
+    container_name: qq-bot-admin-api
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./prisma:/app/prisma
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=file:../prisma/dev.db
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - JWT_SECRET=${JWT_SECRET}
+      - PORT=3001
+
+  admin-web:
+    build: ./admin/web
+    container_name: qq-bot-admin-web
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - admin-api
