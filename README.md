@@ -28,12 +28,21 @@
 
 ## 技术栈
 
+### 机器人主程序
 - **运行时**: Node.js + TypeScript
 - **QQ 协议**: NapCat (OneBot 11)
 - **数据库**: SQLite + Prisma ORM
 - **通信**: WebSocket
 - **AI**: SiliconFlow API (Qwen)
 - **部署**: Docker Compose
+
+### 管理后台
+- **后端**: Express.js + TypeScript
+- **前端**: Vue 3 + TypeScript + Element Plus
+- **状态管理**: Pinia
+- **图表**: ECharts
+- **认证**: JWT
+- **部署**: Docker + Nginx
 
 ## 快速开始
 
@@ -135,21 +144,130 @@ npx ts-node src/index.ts
 ```
 qq-bot/
 ├── src/
-│   └── index.ts          # 主程序
+│   └── index.ts          # 机器人主程序
+├── admin/                # 管理后台
+│   ├── server/           # 后端 API
+│   │   ├── src/
+│   │   ├── Dockerfile
+│   │   └── package.json
+│   └── web/              # 前端界面
+│       ├── src/
+│       ├── Dockerfile
+│       ├── nginx.conf
+│       └── package.json
 ├── prisma/
 │   ├── schema.prisma     # 数据库模型
 │   └── migrations/       # 数据库迁移
 ├── napcat/
 │   └── config/           # NapCat 配置
 ├── docker-compose.yml    # Docker 配置
+├── deploy-qqbot.sh       # Bot 部署脚本
+├── deploy-admin.sh       # 管理后台部署脚本
 ├── COMMANDS.md           # 完整指令文档
 ├── CLAUDE.md             # 开发规范
 └── README.md
 ```
 
+## 管理后台
+
+本项目包含一个 Web 管理后台，用于查看和管理打卡数据。
+
+### 功能特性
+
+- **数据概览** - 总用户数、总打卡数、总时长、今日活跃等统计
+- **打卡趋势** - 可视化打卡趋势图表（日/周/月）
+- **分类统计** - 打卡分类占比饼图
+- **排行榜** - 本周打卡排行榜
+- **打卡记录管理** - 查看、搜索、筛选、删除打卡记录，支持导出 CSV
+- **用户管理** - 查看用户列表和详情，包括打卡统计和成就
+- **暗黑模式** - 支持明/暗主题切换
+- **响应式设计** - 支持移动端访问
+
+### 快速开始
+
+#### 开发环境
+
+1. 启动后端 API（端口 3001）：
+
+```bash
+cd admin/server
+npm install
+npm run dev
+```
+
+2. 启动前端（端口 5173/5174）：
+
+```bash
+cd admin/web
+npm install
+npm run dev
+```
+
+3. 访问 http://localhost:5173，使用以下凭据登录：
+   - 用户名：`admin`
+   - 密码：见 `.env` 文件中的 `ADMIN_PASSWORD`
+
+#### Docker 部署
+
+1. 确保 `.env` 文件中配置了管理后台环境变量：
+
+```env
+# 管理后台配置
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=your-secure-password
+JWT_SECRET=your-jwt-secret-key
+ADMIN_API_PORT=3001
+```
+
+2. 构建并启动管理后台服务：
+
+```bash
+docker compose up -d --build admin-api admin-web
+```
+
+3. 访问管理后台：
+   - 前端：http://localhost:8080
+   - API：http://localhost:3001/health
+
+#### 服务器部署
+
+在服务器上运行部署脚本：
+
+```bash
+./deploy-admin.sh
+```
+
+该脚本会自动：
+- 拉取最新代码
+- 构建 Docker 镜像
+- 执行数据库迁移
+- 重启服务
+- 清理资源
+
+### API 文档
+
+管理后台 API 提供以下端点：
+
+- **认证**: `POST /api/auth/login`, `POST /api/auth/verify`
+- **打卡记录**: `GET /api/checkins`, `GET /api/checkins/:id`, `DELETE /api/checkins/:id`, `GET /api/checkins/export/csv`
+- **用户**: `GET /api/users`, `GET /api/users/:id`, `GET /api/users/:id/checkins`
+- **统计**: `GET /api/stats/overview`, `GET /api/stats/trend`, `GET /api/stats/category`, `GET /api/stats/leaderboard`
+
+详见 [ADMIN_DEV_PLAN.md](./ADMIN_DEV_PLAN.md)
+
+### 技术架构
+
+- **前端**: Vue 3 + TypeScript + Element Plus + ECharts
+- **后端**: Express.js + TypeScript + Prisma
+- **认证**: JWT Bearer Token
+- **数据库**: 共享 Bot 主程序的 SQLite 数据库
+- **容器化**: Docker 多阶段构建 + Nginx
+
 ## 详细文档
 
 - [完整指令文档](./COMMANDS.md) - 所有命令的详细说明
+- [管理后台开发计划](./ADMIN_DEV_PLAN.md) - 管理后台技术文档
+- [管理后台开发进度](./ADMIN_PROGRESS.md) - 开发进度追踪
 
 ## License
 
