@@ -5,14 +5,20 @@ FROM node:20-alpine
 WORKDIR /app
 
 # 复制 package.json 和 package-lock.json
-COPY package*.json ./
+COPY admin/server/package*.json ./
 
 # 安装所有依赖(包括 devDependencies,因为需要 TypeScript 编译)
 RUN npm ci
 
+# 复制 Prisma schema（需要用于生成 Prisma Client）
+COPY prisma ./prisma
+
+# 生成 Prisma Client
+RUN npx prisma generate
+
 # 复制源代码和配置文件
-COPY tsconfig.json ./
-COPY src ./src
+COPY admin/server/tsconfig.json ./
+COPY admin/server/src ./src
 
 # 构建 TypeScript
 RUN npm run build
