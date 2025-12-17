@@ -18,6 +18,7 @@ app.use(
     origin: ENV.NODE_ENV === 'development' ? '*' : [
       'https://admin.joyehuang.me',
       'http://localhost:5173',
+      'http://54.252.221.233:8080',  // 生产环境前端地址
     ],
     credentials: true,
   })
