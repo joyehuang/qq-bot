@@ -17,7 +17,7 @@ services:
     tty: true
 
   bot:
-    build: .
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-joyehuang}/qq-bot:latest
     container_name: qq-bot
     restart: unless-stopped
     depends_on:
@@ -40,9 +40,7 @@ services:
     command: sh -c "sleep 5 && npx ts-node src/index.ts"
 
   admin-api:
-    build:
-      context: .
-      dockerfile: ./admin/server/Dockerfile
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-joyehuang}/qq-bot-admin-server:latest
     container_name: qq-bot-admin-api
     restart: unless-stopped
     ports:
@@ -58,7 +56,7 @@ services:
       - PORT=3001
 
   admin-web:
-    build: ./admin/web
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-joyehuang}/qq-bot-admin-web:latest
     container_name: qq-bot-admin-web
     restart: unless-stopped
     ports:

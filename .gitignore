@@ -8,5 +8,12 @@ node_modules
 prisma/*.db
 prisma/*.db-journal
 
+# Build outputs
+dist/
+build/
+
+# Backups
+*.backup
+
 # Claude
 .claude

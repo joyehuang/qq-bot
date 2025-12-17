@@ -1,4 +1,4 @@
-name: CI/CD - 检查与部署
+name: CI/CD - 智能检查与部署
 
 on:
   push:
@@ -7,77 +7,289 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}
+
 jobs:
-  check:
-    name: TypeScript 编译检查
+  # 检测哪些模块发生了变更
+  detect-changes:
+    name: 检测变更
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      bot: ${{ steps.filter.outputs.bot }}
+      admin-server: ${{ steps.filter.outputs.admin-server }}
+      admin-web: ${{ steps.filter.outputs.admin-web }}
+    steps:
+      - name: 📦 检出代码
+        uses: actions/checkout@v4
+
+      - name: 🔍 检测文件变更
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            bot:
+              - 'src/**'
+              - 'prisma/**'
+              - 'package*.json'
+              - 'Dockerfile'
+              - 'tsconfig.json'
+            admin-server:
+              - 'admin/server/**'
+              - 'prisma/**'
+            admin-web:
+              - 'admin/web/**'
+
+  # Bot 主程序类型检查
+  check-bot:
+    name: 类型检查 - Bot
+    needs: detect-changes
+    if: needs.detect-changes.outputs.bot == 'true'
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: "file:./dev.db"
-
     steps:
-    - name: 📦 检出代码
-      uses: actions/checkout@v4
+      - name: 📦 检出代码
+        uses: actions/checkout@v4
 
-    - name: 🟢 设置 Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-        cache: 'npm'
+      - name: 🟢 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
 
-    - name: 📥 安装 Bot 依赖
-      run: npm ci
+      - name: 📥 安装依赖
+        run: npm ci
 
-    - name: 🔧 生成 Prisma Client
-      run: npx prisma generate
+      - name: 🔧 生成 Prisma Client
+        run: npx prisma generate
 
-    - name: 🔍 TypeScript 编译检查 - Bot 主程序
-      run: npx tsc --noEmit
+      - name: 🔍 TypeScript 编译检查
+        run: npx tsc --noEmit
 
-    - name: 📥 安装 Admin Server 依赖
-      working-directory: admin/server
-      run: npm ci
+  # Admin Server 类型检查
+  check-admin-server:
+    name: 类型检查 - Admin Server
+    needs: detect-changes
+    if: needs.detect-changes.outputs.admin-server == 'true'
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: "file:./dev.db"
+    steps:
+      - name: 📦 检出代码
+        uses: actions/checkout@v4
 
-    - name: 🔍 TypeScript 编译检查 - Admin Server
-      working-directory: admin/server
-      run: npx tsc --noEmit
+      - name: 🟢 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
-    - name: 📥 安装 Admin Web 依赖
-      working-directory: admin/web
-      run: npm ci
+      - name: 📥 安装 Bot 依赖（生成 Prisma Client）
+        run: npm ci
 
-    - name: 🔍 TypeScript 编译检查 - Admin Web
-      working-directory: admin/web
-      run: npx vue-tsc --noEmit
+      - name: 🔧 生成 Prisma Client
+        run: npx prisma generate
 
-    - name: ✅ 检查通过
-      run: echo "🎉 所有代码检查通过！"
+      - name: 📥 安装 Admin Server 依赖
+        working-directory: admin/server
+        run: npm ci
 
+      - name: 🔍 TypeScript 编译检查
+        working-directory: admin/server
+        run: npx tsc --noEmit
+
+  # Admin Web 类型检查
+  check-admin-web:
+    name: 类型检查 - Admin Web
+    needs: detect-changes
+    if: needs.detect-changes.outputs.admin-web == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📦 检出代码
+        uses: actions/checkout@v4
+
+      - name: 🟢 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 📥 安装 Admin Web 依赖
+        working-directory: admin/web
+        run: npm ci
+
+      - name: 🔍 TypeScript 编译检查
+        working-directory: admin/web
+        run: npx vue-tsc --noEmit
+
+  # 构建并推送 Bot 镜像
+  build-bot:
+    name: 构建镜像 - Bot
+    needs: [detect-changes, check-bot]
+    if: |
+      always() &&
+      needs.detect-changes.outputs.bot == 'true' &&
+      (needs.check-bot.result == 'success' || needs.check-bot.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: 📦 检出代码
+        uses: actions/checkout@v4
+
+      - name: 🔐 登录到 GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 📝 提取镜像元数据
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}/qq-bot
+          tags: |
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: 🔨 构建并推送镜像
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  # 构建并推送 Admin Server 镜像
+  build-admin-server:
+    name: 构建镜像 - Admin Server
+    needs: [detect-changes, check-admin-server]
+    if: |
+      always() &&
+      needs.detect-changes.outputs.admin-server == 'true' &&
+      (needs.check-admin-server.result == 'success' || needs.check-admin-server.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: 📦 检出代码
+        uses: actions/checkout@v4
+
+      - name: 🔐 登录到 GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 📝 提取镜像元数据
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}/qq-bot-admin-server
+          tags: |
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: 🔨 构建并推送镜像
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./admin/server/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  # 构建并推送 Admin Web 镜像
+  build-admin-web:
+    name: 构建镜像 - Admin Web
+    needs: [detect-changes, check-admin-web]
+    if: |
+      always() &&
+      needs.detect-changes.outputs.admin-web == 'true' &&
+      (needs.check-admin-web.result == 'success' || needs.check-admin-web.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: 📦 检出代码
+        uses: actions/checkout@v4
+
+      - name: 🔐 登录到 GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 📝 提取镜像元数据
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}/qq-bot-admin-web
+          tags: |
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: 🔨 构建并推送镜像
+        uses: docker/build-push-action@v5
+        with:
+          context: ./admin/web
+          file: ./admin/web/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  # 部署到 EC2
   deploy:
     name: 部署到 EC2
-    needs: check
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [detect-changes, build-bot, build-admin-server, build-admin-web]
+    if: |
+      always() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      (
+        needs.detect-changes.outputs.bot == 'true' ||
+        needs.detect-changes.outputs.admin-server == 'true' ||
+        needs.detect-changes.outputs.admin-web == 'true'
+      )
     runs-on: ubuntu-latest
-
     steps:
-    - name: 📦 检出代码
-      uses: actions/checkout@v4
+      - name: 📦 检出代码
+        uses: actions/checkout@v4
 
-    - name: 📋 显示提交信息
-      run: |
-        echo "部署提交: ${{ github.sha }}"
-        echo "提交者: ${{ github.actor }}"
-        echo "提交信息: ${{ github.event.head_commit.message }}"
+      - name: 📋 显示提交信息
+        run: |
+          echo "部署提交: ${{ github.sha }}"
+          echo "提交者: ${{ github.actor }}"
+          echo "提交信息: ${{ github.event.head_commit.message }}"
+          echo "更新的服务:"
+          echo "  - Bot: ${{ needs.detect-changes.outputs.bot }}"
+          echo "  - Admin Server: ${{ needs.detect-changes.outputs.admin-server }}"
+          echo "  - Admin Web: ${{ needs.detect-changes.outputs.admin-web }}"
 
-    - name: 🚀 部署到 EC2
-      uses: appleboy/ssh-action@v1.0.0
-      with:
-        host: ${{ secrets.EC2_HOST }}
-        username: ${{ secrets.EC2_USER }}
-        key: ${{ secrets.EC2_SSH_KEY }}
-        script: |
-          /home/ubuntu/deploy-qqbot.sh
+      - name: 🚀 部署到 EC2
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          envs: UPDATE_BOT,UPDATE_ADMIN_SERVER,UPDATE_ADMIN_WEB,GITHUB_REPOSITORY_OWNER
+          script: |
+            export UPDATE_BOT="${{ needs.detect-changes.outputs.bot }}"
+            export UPDATE_ADMIN_SERVER="${{ needs.detect-changes.outputs.admin-server }}"
+            export UPDATE_ADMIN_WEB="${{ needs.detect-changes.outputs.admin-web }}"
+            export GITHUB_REPOSITORY_OWNER="${{ github.repository_owner }}"
+            /home/ubuntu/deploy-qqbot.sh
 
-    - name: ✅ 部署完成
-      run: |
-        echo "🎉 QQ Bot 已成功部署到服务器！"
-        echo "查看日志: docker compose logs -f bot"
+      - name: ✅ 部署完成
+        run: |
+          echo "🎉 QQ Bot 已成功部署到服务器！"
+          echo "查看日志: docker compose logs -f"
