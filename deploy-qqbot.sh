@@ -9,8 +9,13 @@ cd /home/ubuntu/qq-bot
 echo "📥 拉取最新代码..."
 git pull origin main
 
-echo "🔨 构建新的 bot 镜像..."
-docker compose build bot
+echo "🔍 调试：检查 schema.prisma 内容..."
+echo "--- schema.prisma 前 15 行 ---"
+head -15 prisma/schema.prisma
+echo "--- 结束 ---"
+
+echo "🔨 构建新的 bot 镜像（强制不使用缓存）..."
+docker compose build --no-cache bot
 
 echo "🗄️ 执行数据库迁移..."
 # 使用新镜像执行数据库迁移（不启动完整服务，只执行迁移）
