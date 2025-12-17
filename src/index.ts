@@ -1,4 +1,3 @@
-// QQ Bot 主程序 - v1.1.0
 import "dotenv/config";
 import WebSocket from 'ws';
 import { PrismaClient, Checkin, Suggestion, Achievement } from './generated/prisma/client';

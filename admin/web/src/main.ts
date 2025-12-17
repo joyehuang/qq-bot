@@ -1,3 +1,4 @@
+// Admin Web Frontend - v1.0.0
 import { createApp } from 'vue';
 import { createPinia } from 'pinia';
 import ElementPlus from 'element-plus';
