@@ -11,6 +11,8 @@ jobs:
   check:
     name: TypeScript 编译检查
     runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: "file:./dev.db"
 
     steps:
     - name: 📦 检出代码
@@ -24,18 +26,12 @@ jobs:
 
     - name: 📥 安装 Bot 依赖
       run: npm ci
-      env:
-        DATABASE_URL: "file:./dev.db"
 
     - name: 🔧 生成 Prisma Client
       run: npx prisma generate
-      env:
-        DATABASE_URL: "file:./dev.db"
 
     - name: 🔍 TypeScript 编译检查 - Bot 主程序
       run: npx tsc --noEmit
-      env:
-        DATABASE_URL: "file:./dev.db"
 
     - name: 📥 安装 Admin Server 依赖
       working-directory: admin/server
