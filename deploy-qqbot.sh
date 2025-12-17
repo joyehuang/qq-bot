@@ -76,7 +76,7 @@ fi
 # 如果 bot 需要更新，先执行数据库迁移
 if [[ "$SERVICES_TO_UPDATE" == *"bot"* ]]; then
   echo "🗄️ 执行数据库迁移..."
-  docker compose run --rm --no-deps bot npx prisma migrate deploy || {
+  docker compose run --rm --no-deps bot npx prisma@6.19.0 migrate deploy || {
     echo "⚠️ 数据库迁移失败，但继续部署..."
   }
 fi

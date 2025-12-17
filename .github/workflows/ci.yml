@@ -65,7 +65,7 @@ jobs:
         run: npm ci
 
       - name: 🔧 生成 Prisma Client
-        run: npx prisma generate
+        run: npx prisma@6.19.0 generate
 
       - name: 🔍 TypeScript 编译检查
         run: npx tsc --noEmit
@@ -91,7 +91,7 @@ jobs:
         run: npm ci
 
       - name: 🔧 生成 Prisma Client
-        run: npx prisma generate
+        run: npx prisma@6.19.0 generate
 
       - name: 📥 安装 Admin Server 依赖
         working-directory: admin/server

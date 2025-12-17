@@ -13,8 +13,8 @@ RUN npm ci
 # 复制 Prisma schema（需要用于生成 Prisma Client）
 COPY prisma ./prisma
 
-# 生成 Prisma Client
-RUN npx prisma generate
+# 生成 Prisma Client (使用与 package.json 相同的版本)
+RUN npx prisma@6.19.0 generate
 
 # 复制源代码和配置文件
 COPY admin/server/tsconfig.json ./

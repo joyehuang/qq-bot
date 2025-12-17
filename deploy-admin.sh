@@ -14,7 +14,7 @@ docker compose build admin-api admin-web
 
 echo "🗄️ 执行数据库迁移（如有需要）..."
 # 使用 admin-api 镜像执行数据库迁移
-docker compose run --rm --no-deps admin-api npx prisma migrate deploy || {
+docker compose run --rm --no-deps admin-api npx prisma@6.19.0 migrate deploy || {
   echo "⚠️ 数据库迁移失败或无需迁移，继续部署..."
 }
 
