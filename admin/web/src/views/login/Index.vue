@@ -59,7 +59,8 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
-import { ElMessage, FormInstance, FormRules } from 'element-plus';
+import { ElMessage } from 'element-plus';
+import type { FormInstance, FormRules } from 'element-plus';
 import { User, Lock } from '@element-plus/icons-vue';
 import { useAuthStore } from '@/stores/auth';
 
