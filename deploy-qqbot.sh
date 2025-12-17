@@ -9,13 +9,17 @@ cd /home/ubuntu/qq-bot
 echo "📥 拉取最新代码..."
 git pull origin main
 
-echo "🔍 调试：检查 schema.prisma 内容..."
-echo "--- schema.prisma 前 15 行 ---"
-head -15 prisma/schema.prisma
-echo "--- 结束 ---"
+echo "🔍 检查文件完整性..."
+# 确保关键文件没有被意外修改
+if git diff --quiet HEAD; then
+  echo "✅ 所有文件与远程版本一致"
+else
+  echo "⚠️ 检测到本地修改，恢复到远程版本..."
+  git restore .
+fi
 
-echo "🔨 构建新的 bot 镜像（强制不使用缓存）..."
-docker compose build --no-cache bot
+echo "🔨 构建新的 bot 镜像..."
+docker compose build bot
 
 echo "🗄️ 执行数据库迁移..."
 # 使用新镜像执行数据库迁移（不启动完整服务，只执行迁移）
