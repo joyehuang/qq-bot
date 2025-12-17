@@ -1,7 +1,6 @@
 // Prisma Client 实例
-// 从项目根目录导入生成的 Prisma Client
-import type { PrismaClient as PrismaClientType } from '@prisma/prisma/client';
-import { PrismaClient } from '@prisma/prisma/client';
+import type { PrismaClient as PrismaClientType } from '@prisma/client';
+import { PrismaClient } from '@prisma/client';
 
 // 导出 Prisma Client实例（单例模式）
 let prisma: PrismaClientType;
@@ -22,4 +21,4 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 export { prisma };
-export type { User, Checkin, Suggestion, Achievement } from '@prisma/prisma/client';
+export type { User, Checkin, Suggestion, Achievement } from '@prisma/client';

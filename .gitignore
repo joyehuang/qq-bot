@@ -2,7 +2,9 @@ node_modules
 # Keep environment variables out of version control
 .env
 
-/src/generated/prisma
+# Prisma Client (now generated to node_modules/.prisma/client)
+# The old location is no longer used
+# /src/generated/prisma
 
 # Database
 prisma/*.db

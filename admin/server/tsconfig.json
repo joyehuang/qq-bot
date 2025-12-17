@@ -10,12 +10,8 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "moduleResolution": "node",
-    "types": ["node"],
-    "baseUrl": ".",
-    "paths": {
-      "@prisma/*": ["../../src/generated/*"]
-    }
+    "types": ["node"]
   },
-  "include": ["src/**/*", "../../src/generated/**/*"],
+  "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]
 }

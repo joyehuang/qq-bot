@@ -1,6 +1,6 @@
 import "dotenv/config";
 import WebSocket from 'ws';
-import { PrismaClient, Checkin, Suggestion, Achievement } from './generated/prisma/client';
+import { PrismaClient, Checkin, Suggestion, Achievement } from '@prisma/client';
 import { getAIStyle } from './config/aiStyles';
 
 // 成就定义
