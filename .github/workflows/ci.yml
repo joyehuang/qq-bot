@@ -21,7 +21,7 @@ jobs:
         node-version: '20'
         cache: 'npm'
 
-    - name: 📥 安装依赖
+    - name: 📥 安装 Bot 依赖
       run: npm ci
       env:
         DATABASE_URL: "file:./dev.db"
@@ -31,10 +31,26 @@ jobs:
       env:
         DATABASE_URL: "file:./dev.db"
 
-    - name: 🔍 TypeScript 编译检查
+    - name: 🔍 TypeScript 编译检查 - Bot 主程序
       run: npx tsc --noEmit
       env:
         DATABASE_URL: "file:./dev.db"
 
+    - name: 📥 安装 Admin Server 依赖
+      working-directory: admin/server
+      run: npm ci
+
+    - name: 🔍 TypeScript 编译检查 - Admin Server
+      working-directory: admin/server
+      run: npx tsc --noEmit
+
+    - name: 📥 安装 Admin Web 依赖
+      working-directory: admin/web
+      run: npm ci
+
+    - name: 🔍 TypeScript 编译检查 - Admin Web
+      working-directory: admin/web
+      run: npx vue-tsc --noEmit
+
     - name: ✅ 检查通过
-      run: echo "🎉 代码检查通过！可以安全部署。"
+      run: echo "🎉 所有代码检查通过！可以安全部署。"
