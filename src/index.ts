@@ -117,8 +117,8 @@ async function callAI(systemPrompt: string, userPrompt: string): Promise<string 
 
 // AI 自动分类打卡内容
 interface ClassificationResult {
-  category: string;      // 一级分类：学习、工作、运动、娱乐、其他
-  subcategory: string;   // 二级分类：计算机、英语、其他学习等
+  category: string;      // 一级分类：学习、项目、工作、运动、娱乐、其他
+  subcategory: string;   // 二级分类：计算机·算法、计算机·AI学习、英语·听力等
 }
 
 async function classifyCheckin(content: string): Promise<ClassificationResult> {
@@ -134,7 +134,8 @@ async function classifyCheckin(content: string): Promise<ClassificationResult> {
     '系统设计': ['架构', '系统设计', '分布式', '高并发', '设计模式', '微服务架构'],
     'DevOps': ['docker', 'kubernetes', 'k8s', 'ci/cd', 'jenkins', '部署', 'devops', '运维'],
     '计算机基础': ['网络', '操作系统', 'os', 'tcp', 'http', '编译原理', '计算机组成'],
-    '面试准备': ['八股', '八股文', '面试', '面经', '校招', '秋招', '春招', '笔试', '面试题', '刷面试']
+    '面试准备': ['八股', '八股文', '面试', '面经', '校招', '秋招', '春招', '笔试', '面试题', '刷面试'],
+    'AI学习': ['机器学习', '深度学习', 'ml', 'dl', 'ai', '人工智能', '神经网络', 'transformer', 'llm', '大模型', 'gpt', 'bert', 'agent', '强化学习', 'rl', 'cv', '计算机视觉', 'nlp', '自然语言处理', 'pytorch', 'tensorflow', 'keras']
   };
 
   // 英语相关关键词
@@ -163,10 +164,14 @@ async function classifyCheckin(content: string): Promise<ClassificationResult> {
   }
 
   // 其他快速匹配
-  const workKeywords = ['工作', '项目', '开发', '写代码', '写文档', '开会', '会议', 'bug', '修复'];
+  const projectKeywords = ['项目', '实战', '开发项目', '做项目', '毕设', '毕业设计', 'project', '课设', '课程设计', '大作业'];
+  const workKeywords = ['工作', '写代码', '写文档', '开会', '会议', 'bug', '修复', '上班', '加班'];
   const exerciseKeywords = ['运动', '跑步', '健身', '锻炼', '瑜伽', '游泳', '篮球', '足球', '羽毛球', '乒乓球'];
   const entertainmentKeywords = ['游戏', '追剧', '电影', '娱乐', '放松', '玩', '社交'];
 
+  if (projectKeywords.some(kw => contentLower.includes(kw))) {
+    return { category: '项目', subcategory: '' };
+  }
   if (workKeywords.some(kw => contentLower.includes(kw))) {
     return { category: '工作', subcategory: '' };
   }
@@ -186,20 +191,22 @@ async function classifyCheckin(content: string): Promise<ClassificationResult> {
 
 分类规则：
 1. 学习类：
-   - 计算机相关（算法、前端、后端、数据库、系统设计、DevOps、计算机基础、面试准备）
+   - 计算机相关（算法、前端、后端、数据库、系统设计、DevOps、计算机基础、面试准备、AI学习）
    - 英语相关（听力、口语、阅读、写作、词汇、语法、考试）
    - 其他学习（数学、物理、专业课等）
 
-2. 工作类：工作项目、开发任务、写文档、开会等
+2. 项目类：实战项目、开发项目、毕设、课设等
 
-3. 运动类：各种运动健身活动
+3. 工作类：工作任务、写代码、写文档、开会等
 
-4. 娱乐类：游戏、追剧、社交娱乐等
+4. 运动类：各种运动健身活动
 
-5. 其他：无法明确分类的内容
+5. 娱乐类：游戏、追剧、社交娱乐等
+
+6. 其他：无法明确分类的内容
 
 输出格式：只返回 JSON，格式为 {"category": "学习", "subcategory": "计算机·算法"}
-如果是工作/运动/娱乐/其他，subcategory 为空字符串。`;
+如果是项目/工作/运动/娱乐/其他，subcategory 为空字符串。`;
 
   const userPrompt = `请分类以下打卡内容：\n${content}`;
 
