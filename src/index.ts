@@ -138,6 +138,9 @@ async function classifyCheckin(content: string): Promise<ClassificationResult> {
     'AI学习': ['机器学习', '深度学习', 'ml', 'dl', 'ai', '人工智能', '神经网络', 'transformer', 'llm', '大模型', 'gpt', 'bert', 'agent', '强化学习', 'rl', 'cv', '计算机视觉', 'nlp', '自然语言处理', 'pytorch', 'tensorflow', 'keras']
   };
 
+  // 计算机通用关键词（兜底）
+  const computerGeneralKeywords = ['编程', '代码', 'code', 'coding', '程序', 'programming', '计算机', 'computer', 'cs', '软件', 'software', '技术', '学习编程'];
+
   // 英语相关关键词
   const englishKeywords = {
     '听力': ['听力', '听播客', '美剧', '听懂', 'listening', '听写', '精听', '泛听'],
@@ -154,6 +157,11 @@ async function classifyCheckin(content: string): Promise<ClassificationResult> {
     if (keywords.some(kw => contentLower.includes(kw))) {
       return { category: '学习', subcategory: `计算机·${subcat}` };
     }
+  }
+
+  // 检查计算机通用关键词（兜底）
+  if (computerGeneralKeywords.some(kw => contentLower.includes(kw))) {
+    return { category: '学习', subcategory: '计算机·其他' };
   }
 
   // 检查英语相关
@@ -189,24 +197,35 @@ async function classifyCheckin(content: string): Promise<ClassificationResult> {
 
   const systemPrompt = `你是一个智能分类助手。根据用户的打卡内容，判断它属于哪个分类。
 
-分类规则：
-1. 学习类：
-   - 计算机相关（算法、前端、后端、数据库、系统设计、DevOps、计算机基础、面试准备、AI学习）
-   - 英语相关（听力、口语、阅读、写作、词汇、语法、考试）
-   - 其他学习（数学、物理、专业课等）
+⚠️ 重要：必须严格按照以下分类返回，不得自创分类名称！
 
-2. 项目类：实战项目、开发项目、毕设、课设等
+一级分类（category）只能是：学习、项目、工作、运动、娱乐、其他
 
-3. 工作类：工作任务、写代码、写文档、开会等
+二级分类（subcategory）规则：
+1. 学习类必须选择以下之一：
+   - 计算机·算法
+   - 计算机·前端
+   - 计算机·后端
+   - 计算机·数据库
+   - 计算机·系统设计
+   - 计算机·DevOps
+   - 计算机·计算机基础
+   - 计算机·面试准备
+   - 计算机·AI学习（机器学习、深度学习、LLM、大模型、Agent等）
+   - 计算机·其他（其他计算机相关内容）
+   - 英语·听力
+   - 英语·口语
+   - 英语·阅读
+   - 英语·写作
+   - 英语·词汇
+   - 英语·语法
+   - 英语·考试
+   - 其他学习（数学、物理、专业课等非计算机非英语的学习）
 
-4. 运动类：各种运动健身活动
+2. 项目、工作、运动、娱乐、其他类：subcategory 必须为空字符串
 
-5. 娱乐类：游戏、追剧、社交娱乐等
-
-6. 其他：无法明确分类的内容
-
-输出格式：只返回 JSON，格式为 {"category": "学习", "subcategory": "计算机·算法"}
-如果是项目/工作/运动/娱乐/其他，subcategory 为空字符串。`;
+输出格式：只返回纯 JSON，格式为 {"category": "学习", "subcategory": "计算机·算法"}
+不要添加任何解释文字，只返回JSON。`;
 
   const userPrompt = `请分类以下打卡内容：\n${content}`;
 
