@@ -1945,7 +1945,7 @@ interface YearlyReportData {
     duration: number;
     category: string | null;
   }>;
-  achievements: Array<{ achievement: string; unlockedAt: Date }>;
+  achievements: Array<{ achievementId: string; unlockedAt: Date }>;
   avgDailyMinutes: number;
 }
 
@@ -2066,8 +2066,8 @@ async function generateYearlyAISummary(
   // 成就字符串
   const achievementStr = data.achievements
     .map(a => {
-      const achInfo = ACHIEVEMENTS[a.achievement];
-      return achInfo ? `${achInfo.icon} ${achInfo.name}` : a.achievement;
+      const achInfo = ACHIEVEMENTS[a.achievementId];
+      return achInfo ? `${achInfo.icon} ${achInfo.name}` : a.achievementId;
     })
     .join('、') || '暂无';
 
@@ -2203,7 +2203,7 @@ async function generateYearlyReport(
   if (data.achievements.length > 0) {
     message += `🏆 年度成就\n`;
     data.achievements.forEach(a => {
-      const achInfo = ACHIEVEMENTS[a.achievement];
+      const achInfo = ACHIEVEMENTS[a.achievementId];
       if (achInfo) {
         message += `${achInfo.icon} ${achInfo.name}\n`;
       }
@@ -3334,7 +3334,7 @@ function connectBot() {
 
         case '测试年报':
           // 超级管理员测试用，私聊发送
-          if (!isSuperAdmin(event.user_id!)) {
+          if (event.user_id?.toString() !== SUPER_ADMIN_QQ) {
             sendReply(ws, event, '只有超级管理员才能测试此功能');
             break;
           }
