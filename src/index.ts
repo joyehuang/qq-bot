@@ -3066,7 +3066,7 @@ function startYearlyReportScheduler(ws: WebSocket): void {
             if (data.achievements.length > 0) {
               message += `🏆 年度成就\n`;
               data.achievements.forEach(a => {
-                const achInfo = ACHIEVEMENTS[a.achievement];
+                const achInfo = ACHIEVEMENTS[a.achievementId];
                 if (achInfo) {
                   message += `${achInfo.icon} ${achInfo.name}\n`;
                 }
