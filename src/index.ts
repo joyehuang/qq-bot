@@ -76,10 +76,14 @@ const VERSION_FEATURES = [
 // AI 配置
 const AI_API_URL = 'https://api.siliconflow.cn/v1/chat/completions';
 const AI_API_KEY = process.env.AI_API_KEY || '';
-const AI_MODEL = process.env.AI_MODEL || 'Qwen/Qwen2.5-7B-Instruct';
+const AI_MODEL = process.env.AI_MODEL || 'Qwen/Qwen2.5-32B-Instruct';
 
 // AI 调用函数
-async function callAI(systemPrompt: string, userPrompt: string): Promise<string | null> {
+async function callAI(
+  systemPrompt: string,
+  userPrompt: string,
+  options?: { maxTokens?: number; temperature?: number; model?: string }
+): Promise<string | null> {
   if (!AI_API_KEY) {
     return null;
   }
@@ -92,13 +96,13 @@ async function callAI(systemPrompt: string, userPrompt: string): Promise<string 
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: AI_MODEL,
+        model: options?.model || AI_MODEL,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
         ],
-        max_tokens: 200,
-        temperature: 0.7
+        max_tokens: options?.maxTokens || 200,
+        temperature: options?.temperature ?? 0.7
       })
     });
 
@@ -119,6 +123,93 @@ async function callAI(systemPrompt: string, userPrompt: string): Promise<string 
 interface ClassificationResult {
   category: string;      // 一级分类：学习、项目、工作、运动、娱乐、其他
   subcategory: string;   // 二级分类：计算机·算法、计算机·AI学习、英语·听力等
+}
+
+const CLASSIFICATION_OPTIONS: ClassificationResult[] = [
+  { category: '学习', subcategory: '计算机·算法' },
+  { category: '学习', subcategory: '计算机·前端' },
+  { category: '学习', subcategory: '计算机·后端' },
+  { category: '学习', subcategory: '计算机·数据库' },
+  { category: '学习', subcategory: '计算机·系统设计' },
+  { category: '学习', subcategory: '计算机·DevOps' },
+  { category: '学习', subcategory: '计算机·计算机基础' },
+  { category: '学习', subcategory: '计算机·面试准备' },
+  { category: '学习', subcategory: '计算机·AI学习' },
+  { category: '学习', subcategory: '计算机·其他' },
+  { category: '学习', subcategory: '英语·听力' },
+  { category: '学习', subcategory: '英语·口语' },
+  { category: '学习', subcategory: '英语·阅读' },
+  { category: '学习', subcategory: '英语·写作' },
+  { category: '学习', subcategory: '英语·词汇' },
+  { category: '学习', subcategory: '英语·语法' },
+  { category: '学习', subcategory: '英语·考试' },
+  { category: '学习', subcategory: '其他学习' },
+  { category: '项目', subcategory: '' },
+  { category: '工作', subcategory: '' },
+  { category: '运动', subcategory: '' },
+  { category: '娱乐', subcategory: '' },
+  { category: '其他', subcategory: '' }
+];
+
+const CLASSIFICATION_ALIASES: Record<string, ClassificationResult> = {
+  '算法': { category: '学习', subcategory: '计算机·算法' },
+  '前端': { category: '学习', subcategory: '计算机·前端' },
+  '后端': { category: '学习', subcategory: '计算机·后端' },
+  '数据库': { category: '学习', subcategory: '计算机·数据库' },
+  '系统设计': { category: '学习', subcategory: '计算机·系统设计' },
+  'devops': { category: '学习', subcategory: '计算机·DevOps' },
+  '运维': { category: '学习', subcategory: '计算机·DevOps' },
+  '计算机基础': { category: '学习', subcategory: '计算机·计算机基础' },
+  '面试': { category: '学习', subcategory: '计算机·面试准备' },
+  '八股': { category: '学习', subcategory: '计算机·面试准备' },
+  'ai学习': { category: '学习', subcategory: '计算机·AI学习' },
+  '机器学习': { category: '学习', subcategory: '计算机·AI学习' },
+  '深度学习': { category: '学习', subcategory: '计算机·AI学习' },
+  '大模型': { category: '学习', subcategory: '计算机·AI学习' },
+  '英语听力': { category: '学习', subcategory: '英语·听力' },
+  '听力': { category: '学习', subcategory: '英语·听力' },
+  '口语': { category: '学习', subcategory: '英语·口语' },
+  '阅读': { category: '学习', subcategory: '英语·阅读' },
+  '写作': { category: '学习', subcategory: '英语·写作' },
+  '词汇': { category: '学习', subcategory: '英语·词汇' },
+  '语法': { category: '学习', subcategory: '英语·语法' },
+  '考试': { category: '学习', subcategory: '英语·考试' },
+  '其他学习': { category: '学习', subcategory: '其他学习' },
+  '项目': { category: '项目', subcategory: '' },
+  '工作': { category: '工作', subcategory: '' },
+  '运动': { category: '运动', subcategory: '' },
+  '娱乐': { category: '娱乐', subcategory: '' },
+  '其他': { category: '其他', subcategory: '' }
+};
+
+function matchClassificationFromText(text: string): ClassificationResult | null {
+  const normalized = text.replace(/\s+/g, '').toLowerCase();
+
+  for (const [keyword, target] of Object.entries(CLASSIFICATION_ALIASES)) {
+    const normalizedKey = keyword.replace(/\s+/g, '').toLowerCase();
+    if (normalized.includes(normalizedKey)) {
+      return target;
+    }
+  }
+
+  for (const option of CLASSIFICATION_OPTIONS) {
+    const label = (option.subcategory || option.category)
+      .replace(/·/g, '')
+      .replace(/\s+/g, '')
+      .toLowerCase();
+    if (normalized.includes(label)) {
+      return option;
+    }
+  }
+
+  return null;
+}
+
+function formatClassificationLabel(result: ClassificationResult): string {
+  if (!result.category) {
+    return '未分类';
+  }
+  return result.subcategory ? `${result.category}/${result.subcategory}` : result.category;
 }
 
 async function classifyCheckin(content: string): Promise<ClassificationResult> {
@@ -224,13 +315,15 @@ async function classifyCheckin(content: string): Promise<ClassificationResult> {
 
 2. 项目、工作、运动、娱乐、其他类：subcategory 必须为空字符串
 
-输出格式：只返回纯 JSON，格式为 {"category": "学习", "subcategory": "计算机·算法"}
+如果无法判断或不确定，请返回 {"category": "其他", "subcategory": ""}
+
+输出格式：只返回一行纯 JSON，格式为 {"category": "学习", "subcategory": "计算机·算法"}
 不要添加任何解释文字，只返回JSON。`;
 
   const userPrompt = `请分类以下打卡内容：\n${content}`;
 
   try {
-    const aiResponse = await callAI(systemPrompt, userPrompt);
+    const aiResponse = await callAI(systemPrompt, userPrompt, { temperature: 0.3 });
     if (aiResponse) {
       const result = JSON.parse(aiResponse.trim());
       return result;
@@ -241,6 +334,83 @@ async function classifyCheckin(content: string): Promise<ClassificationResult> {
 
   // AI 调用失败，返回其他
   return { category: '其他', subcategory: '' };
+}
+
+async function handleClassificationCorrection(
+  ws: WebSocket,
+  event: Message,
+  cleanMessage: string
+): Promise<boolean> {
+  const intentMatched = /(分类|归类|标签|类型|类别)/.test(cleanMessage) && /(改成|改为|纠正|修正|错了|调整|应该)/.test(cleanMessage);
+
+  if (!intentMatched) {
+    return false;
+  }
+
+  const target = matchClassificationFromText(cleanMessage);
+  const userQQ = event.user_id?.toString();
+
+  if (!userQQ) {
+    return false;
+  }
+
+  const user = await prisma.user.findUnique({ where: { qqNumber: userQQ } });
+
+  if (!user) {
+    sendReply(ws, event, '还没有找到你的打卡记录，先打一次卡再来调整分类吧～');
+    return true;
+  }
+
+  const lastCheckin = await prisma.checkin.findFirst({
+    where: { userId: user.id },
+    orderBy: { createdAt: 'desc' }
+  });
+
+  if (!lastCheckin) {
+    sendReply(ws, event, '没有找到可以修改的打卡记录哦～');
+    return true;
+  }
+
+  if (!target) {
+    const options = CLASSIFICATION_OPTIONS
+      .map(opt => opt.subcategory || opt.category)
+      .filter(Boolean)
+      .join('\n• ');
+
+    sendReply(
+      ws,
+      event,
+      '没有识别到你想改成的分类，请在消息里带上目标分类名称～\n\n可选分类：\n• ' + options
+    );
+    return true;
+  }
+
+  const current: ClassificationResult = {
+    category: lastCheckin.category || '',
+    subcategory: lastCheckin.subcategory || ''
+  };
+
+  if (
+    current.category === target.category &&
+    (current.subcategory || '') === (target.subcategory || '')
+  ) {
+    sendReply(ws, event, `上一条已经是 ${formatClassificationLabel(current)} 啦～`);
+    return true;
+  }
+
+  await prisma.checkin.update({
+    where: { id: lastCheckin.id },
+    data: { category: target.category, subcategory: target.subcategory || null }
+  });
+
+  const responseParts = [
+    '已按照你的自然语言反馈修改分类（仅限上一条记录）：',
+    `• 原分类：${formatClassificationLabel(current)}`,
+    `• 新分类：${formatClassificationLabel(target)}`
+  ];
+
+  sendReply(ws, event, responseParts.join('\n'));
+  return true;
 }
 
 // 生成 AI 鼓励语
@@ -3220,6 +3390,10 @@ function connectBot() {
         return;
       }
 
+      if (await handleClassificationCorrection(ws, event, cleanMessage)) {
+        return;
+      }
+
       const parts = cleanMessage.split(/\s+/);
       const command = parts[0];
       const args = parts.slice(1);
@@ -3576,15 +3750,16 @@ function connectBot() {
 
         case '帮助':
         case 'help':
-          let helpMsg = '📖 可用命令:\n\n' +
-            '🆕 我想打卡/注册 - 新人注册\n\n' +
-            '📝 打卡 [时长] [内容]\n' +
-            '  例: 打卡 30分钟 学习TypeScript\n\n' +
-            '💸 打卡 贷款 [时长] [内容]\n' +
-            '  (正常打卡可抵消贷款)\n\n' +
-            '🔙 撤销打卡 - 撤销今日最后一条记录\n\n' +
-            '📊 打卡记录 - 查看统计(含AI分析)\n' +
-            '👀 查看打卡 @某人 - 查看他人记录\n' +
+            let helpMsg = '📖 可用命令:\n\n' +
+              '🆕 我想打卡/注册 - 新人注册\n\n' +
+              '📝 打卡 [时长] [内容]\n' +
+              '  例: 打卡 30分钟 学习TypeScript\n\n' +
+              '💸 打卡 贷款 [时长] [内容]\n' +
+              '  (正常打卡可抵消贷款)\n\n' +
+              '🛠 分类纠错 - @机器人说“分类错了改成英语·听力”（仅修改上一条）\n\n' +
+              '🔙 撤销打卡 - 撤销今日最后一条记录\n\n' +
+              '📊 打卡记录 - 查看统计(含AI分析)\n' +
+              '👀 查看打卡 @某人 - 查看他人记录\n' +
             '📅 周报 - 本周报告(含AI总结)\n' +
             '💰 负债/欠款 - 查看贷款负债\n' +
             '🎯 设置目标 [时长] - 每日目标\n' +
