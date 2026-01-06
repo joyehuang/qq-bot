@@ -19,11 +19,13 @@ model User {
   maxStreak       Int           @default(0) @map("max_streak")       // 历史最长连续天数
   lastCheckinDate DateTime?     @map("last_checkin_date")            // 最后打卡日期
   dailyGoal       Int?          @map("daily_goal")                   // 每日目标（分钟）
-  aiStyle         String        @default("encourage") @map("ai_style") // AI 风格：encourage/strict/funny/professional/ridicule
+  aiStyle         String        @default("encourage") @map("ai_style") // AI 风格：encourage/strict/funny/professional/ridicule/teacher
+  studyStyle      String        @default("teacher") @map("study_style") // 学习风格（默认 teacher）
   createdAt       DateTime      @default(now()) @map("created_at")
   updatedAt       DateTime      @updatedAt @map("updated_at")
   checkins        Checkin[]
   achievements    Achievement[]
+  studyPlans      StudyPlan[]                              // 学习计划关联
 
   @@map("users")
 }
@@ -69,4 +71,63 @@ model Achievement {
 
   @@unique([userId, achievementId])
   @@map("achievements")
+}
+
+// ==================== 学习系统表 ====================
+
+// 学习项目表（如：minimind, minimind2 等）
+model StudyProject {
+  id          String    @id @default(uuid())
+  projectKey  String    @unique @map("project_key") // "minimind", "minimind2"
+  name        String    // "MiniMind 学习计划"
+  description String?   // 项目描述
+  isActive    Boolean   @default(true) @map("is_active")
+  config      String?   // 学习路径配置（JSON 格式）
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  plans       StudyPlan[]
+
+  @@map("study_projects")
+}
+
+// 用户学习计划表
+model StudyPlan {
+  id              String      @id @default(uuid())
+  userId          Int         @map("user_id")
+  projectId       String      @map("project_id")
+  currentModule   String      @default("") @map("current_module") // 当前模块 ID
+  currentStep     String      @default("") @map("current_step")   // 当前步骤 ID
+  moduleProgress  Int         @default(0) @map("module_progress")  // 模块进度 %
+  totalProgress   Int         @default(0) @map("total_progress")   // 总进度 %
+  reminderEnabled Boolean     @default(true) @map("reminder_enabled")
+  joinedAt        DateTime    @default(now()) @map("joined_at")
+  lastActiveAt    DateTime?   @map("last_active_at")
+
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project         StudyProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  checkpoints     StudyCheckpoint[]
+
+  @@unique([userId, projectId])
+  @@index([userId])
+  @@index([projectId])
+  @@map("study_plans")
+}
+
+// 学习打卡记录表
+model StudyCheckpoint {
+  id          String    @id @default(uuid())
+  planId      String    @map("plan_id")
+  module      String    // 模块 ID
+  step        String    // 步骤 ID
+  content     String?   // 学习内容/心得
+  duration    Int       // 时长（分钟）
+  checkinId   Int?      @map("checkin_id") // 关联到通用 Checkin.id
+  completedAt DateTime  @default(now()) @map("completed_at")
+
+  plan        StudyPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@index([planId])
+  @@index([completedAt])
+  @@map("study_checkpoints")
 }

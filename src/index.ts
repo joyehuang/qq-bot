@@ -2,6 +2,7 @@ import "dotenv/config";
 import WebSocket from 'ws';
 import { PrismaClient, Checkin, Suggestion, Achievement } from '@prisma/client';
 import { getAIStyle } from './config/aiStyles';
+import { getProjectConfig, isValidProject } from './config/study-projects';
 
 // 成就定义
 const ACHIEVEMENTS: Record<string, { name: string; description: string; icon: string }> = {
@@ -3090,6 +3091,816 @@ function getNextReminderTime(): number {
   return diff;
 }
 
+// ==================== 学习督促定时器 ====================
+
+// 学习督促定时器
+let studyReminderTimer: NodeJS.Timeout | null = null;
+
+/**
+ * 启动学习督促定时器
+ * 每天 19:00 发送学习提醒（与通用打卡督促并行）
+ */
+function startStudyReminderTimer(ws: WebSocket): void {
+  if (!REMINDER_GROUP_ID) {
+    console.log('学习督促功能未配置（需要 REMINDER_GROUP_ID）');
+    return;
+  }
+
+  const scheduleNextReminder = () => {
+    const delay = getNextReminderTime();
+    const nextTime = new Date(Date.now() + delay);
+
+    console.log(`下次学习督促时间: ${nextTime.toLocaleString('zh-CN', { timeZone: REMINDER_TIMEZONE })} (${REMINDER_TIMEZONE})`);
+
+    studyReminderTimer = setTimeout(async () => {
+      try {
+        // 获取所有需要提醒的学习计划
+        const plans = await prisma.studyPlan.findMany({
+          where: {
+            reminderEnabled: true,
+            project: {
+              isActive: true
+            }
+          },
+          include: {
+            user: {
+              select: {
+                qqNumber: true,
+                nickname: true,
+                studyStyle: true
+              }
+            },
+            project: true
+          }
+        });
+
+        if (plans.length > 0 && botEnabled) {
+          console.log(`[学习督促] 开始发送提醒，共 ${plans.length} 位用户`);
+
+          // 按项目分组
+          const plansByProject: Record<string, typeof plans> = {};
+          plans.forEach(plan => {
+            if (!plansByProject[plan.projectId]) {
+              plansByProject[plan.projectId] = [];
+            }
+            plansByProject[plan.projectId].push(plan);
+          });
+
+          // 为每个项目发送提醒
+          for (const [projectId, projectPlans] of Object.entries(plansByProject)) {
+            const project = projectPlans[0].project;
+            const projectConfig = getProjectConfig(project.projectKey);
+
+            for (const plan of projectPlans) {
+              // 获取当前模块和步骤
+              const currentModule = projectConfig?.modules.find(m => m.id === plan.currentModule);
+              const currentStep = currentModule?.steps.find(s => s.id === plan.currentStep);
+
+              let reminderMsg = `⏰ ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', timeZone: REMINDER_TIMEZONE })} 到了！\n\n` +
+                `📖 ${project.name} 学习时间到了！\n\n`;
+
+              if (currentModule && currentStep) {
+                reminderMsg += `📍 当前模块：${currentModule.title}\n` +
+                  `📊 当前进度：${plan.totalProgress}%\n\n` +
+                  `📝 今日建议任务（约 ${currentStep.duration} 分钟）：\n` +
+                  `${currentStep.name} - ${currentStep.description}\n\n`;
+              }
+
+              // 添加学习建议（根据 studyStyle）
+              const style = getAIStyle(plan.user.studyStyle || 'teacher');
+              if (style.id === 'teacher') {
+                reminderMsg += `💡 老师的小贴士：\n`;
+                if (plan.totalProgress < 20) {
+                  reminderMsg += `刚开始学习不要急，重点是建立学习习惯。每天坚持一点点，比一次学很久更重要。`;
+                } else if (plan.totalProgress < 50) {
+                  reminderMsg += `学习节奏很好！继续保持，可以尝试结合实践来加深理解。`;
+                } else if (plan.totalProgress < 80) {
+                  reminderMsg += `已经过半了！可以开始总结学到的知识，尝试应用到实际场景中。`;
+                } else {
+                  reminderMsg += `快要完成了！回顾整个学习过程，总结经验，准备迎接新的挑战！`;
+                }
+              }
+
+              reminderMsg += `\n\n💡 完成后使用：/study ${project.projectKey} checkin [内容]`;
+
+              // 发送提醒（@ 用户）
+              const atUser = `[CQ:at,qq=${plan.user.qqNumber}]`;
+              sendGroupMessage(ws, REMINDER_GROUP_ID, `${atUser}\n\n${reminderMsg}`);
+
+              // 间隔1秒，避免刷屏
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+          }
+
+          console.log(`[学习督促] 已发送提醒给 ${plans.length} 位用户`);
+        }
+      } catch (error) {
+        console.error('[学习督促] 发送提醒失败:', error);
+      }
+
+      // 递归调度下一次提醒
+      scheduleNextReminder();
+    }, delay);
+  };
+
+  scheduleNextReminder();
+}
+
+// ==================== 学习系统函数 ====================
+
+/**
+ * 处理学习系统指令
+ * 用法：/study [project] [action] [params...]
+ */
+async function handleStudyCommand(
+  ws: WebSocket,
+  event: Message,
+  args: string[]
+): Promise<void> {
+  if (args.length < 2) {
+    let helpMsg = '📚 学习系统指令帮助\n\n' +
+      '用法：/study [项目] [操作] [参数]\n\n' +
+      '支持的项目：\n' +
+      '  minimind   - MiniMind 学习计划\n\n' +
+      '支持的操作：\n' +
+      '  join        - 加入学习计划\n' +
+      '  checkin     - 学习打卡\n' +
+      '  status      - 查看进度\n' +
+      '  reminder    - 开关提醒\n\n' +
+      '示例：\n' +
+      '  /study minimind join\n' +
+      '  /study minimind checkin 今天学会了提示词工程\n' +
+      '  /study minimind status\n' +
+      '  /study minimind reminder on/off';
+
+    sendReply(ws, event, helpMsg);
+    return;
+  }
+
+  const [projectKey, action, ...params] = args;
+
+  // 验证项目是否存在
+  if (!isValidProject(projectKey)) {
+    sendReply(ws, event, `❌ 学习项目 "${projectKey}" 不存在\n当前支持：minimind`);
+    return;
+  }
+
+  switch (action) {
+    case 'join':
+      await handleStudyJoin(ws, event, projectKey);
+      break;
+
+    case 'checkin':
+      await handleStudyCheckin(ws, event, projectKey, params.join(' '));
+      break;
+
+    case 'status':
+      await handleStudyStatus(ws, event, projectKey);
+      break;
+
+    case 'reminder':
+      await handleStudyReminderToggle(ws, event, projectKey, params[0]);
+      break;
+
+    default:
+      sendReply(ws, event, `❌ 未知操作：${action}\n使用 /study 查看帮助`);
+  }
+}
+
+/**
+ * 处理加入学习计划
+ */
+async function handleStudyJoin(
+  ws: WebSocket,
+  event: Message,
+  projectKey: string
+): Promise<void> {
+  const userId = event.user_id!;
+  const qqNumber = userId.toString();
+
+  try {
+    // 获取或创建用户
+    let user = await prisma.user.findUnique({
+      where: { qqNumber }
+    });
+
+    if (!user) {
+      user = await prisma.user.create({
+        data: {
+          qqNumber,
+          nickname: event.sender?.nickname || '同学'
+        }
+      });
+    }
+
+    // 获取项目配置
+    const projectConfig = getProjectConfig(projectKey);
+    if (!projectConfig) {
+      sendReply(ws, event, `❌ 项目配置未找到：${projectKey}`);
+      return;
+    }
+
+    // 检查是否已加入
+    const existingPlan = await prisma.studyPlan.findFirst({
+      where: {
+        userId: user.id,
+        project: {
+          projectKey
+        }
+      },
+      include: {
+        project: true
+      }
+    });
+
+    if (existingPlan) {
+      sendReply(ws, event,
+        `⚠️ 你已经加入了 ${existingPlan.project.name}\n\n` +
+        `📊 当前进度：\n` +
+        `模块：${existingPlan.currentModule || '未开始'}\n` +
+        `步骤：${existingPlan.currentStep || '未开始'}\n` +
+        `进度：${existingPlan.moduleProgress}%`
+      );
+      return;
+    }
+
+    // 创建或获取项目记录
+    let project = await prisma.studyProject.findUnique({
+      where: { projectKey }
+    });
+
+    if (!project) {
+      project = await prisma.studyProject.create({
+        data: {
+          projectKey,
+          name: projectConfig.name,
+          description: projectConfig.description,
+          isActive: true,
+          config: JSON.stringify({
+            modules: projectConfig.modules
+          })
+        }
+      });
+    }
+
+    // 创建学习计划
+    const plan = await prisma.studyPlan.create({
+      data: {
+        userId: user.id,
+        projectId: project.id,
+        currentModule: projectConfig.defaults.startModule,
+        currentStep: 'quick_start',
+        moduleProgress: 0,
+        totalProgress: 0,
+        reminderEnabled: true
+      },
+      include: {
+        project: true
+      }
+    });
+
+    // 获取第一个模块
+    const firstModule = projectConfig.modules.find(m => m.id === projectConfig.defaults.startModule);
+
+    let welcomeMsg = `🎓 欢迎加入 ${project.name}！\n\n` +
+      `📚 项目介绍：\n${project.description}\n\n` +
+      `🔗 资源链接：\n` +
+      `📖 学习网站：${projectConfig.resources.website}\n` +
+      `💻 GitHub 仓库：${projectConfig.resources.github}\n\n`;
+
+    if (firstModule) {
+      welcomeMsg += `📌 第一个学习任务：\n` +
+        `模块：${firstModule.title}\n` +
+        `预计耗时：${firstModule.estimatedTime} 分钟\n\n` +
+        `📝 学习步骤：\n`;
+      firstModule.steps.forEach((step, index) => {
+        welcomeMsg += `${index + 1}. ${step.name}（${step.duration}分钟）- ${step.description}\n`;
+      });
+
+      welcomeMsg += `\n💡 完成后使用：/study ${projectKey} checkin [学习心得]`;
+    }
+
+    sendReply(ws, event, welcomeMsg);
+
+  } catch (error) {
+    console.error('加入学习计划失败:', error);
+    sendReply(ws, event, '❌ 加入失败，请稍后重试');
+  }
+}
+
+/**
+ * 处理学习打卡
+ */
+async function handleStudyCheckin(
+  ws: WebSocket,
+  event: Message,
+  projectKey: string,
+  content: string
+): Promise<void> {
+  const userId = event.user_id!;
+  const qqNumber = userId.toString();
+
+  try {
+    // 获取用户
+    const user = await prisma.user.findUnique({
+      where: { qqNumber },
+      select: { id: true, nickname: true, studyStyle: true }
+    });
+
+    if (!user) {
+      sendReply(ws, event, '❌ 你还没有注册，请先发送 /study minimind join 加入学习计划');
+      return;
+    }
+
+    // 获取学习计划
+    const plan = await prisma.studyPlan.findFirst({
+      where: {
+        userId: user.id,
+        project: {
+          projectKey
+        }
+      },
+      include: {
+        project: true
+      }
+    });
+
+    if (!plan) {
+      sendReply(ws, event, `❌ 你还没有加入 ${projectKey} 学习计划\n使用 /study ${projectKey} join 加入`);
+      return;
+    }
+
+    // 获取项目配置
+    const projectConfig = getProjectConfig(projectKey);
+    if (!projectConfig) {
+      sendReply(ws, event, `❌ 项目配置未找到：${projectKey}`);
+      return;
+    }
+
+    // 获取当前模块
+    const currentModule = projectConfig.modules.find(m => m.id === plan.currentModule);
+    if (!currentModule) {
+      sendReply(ws, event, `❌ 当前模块未找到：${plan.currentModule}`);
+      return;
+    }
+
+    // 获取当前步骤
+    const currentStepIndex = currentModule.steps.findIndex(s => s.id === plan.currentStep);
+    if (currentStepIndex === -1) {
+      sendReply(ws, event, `❌ 当前步骤未找到：${plan.currentStep}`);
+      return;
+    }
+
+    const currentStep = currentModule.steps[currentStepIndex];
+
+    // 创建学习打卡记录
+    const checkpoint = await prisma.studyCheckpoint.create({
+      data: {
+        planId: plan.id,
+        module: plan.currentModule,
+        step: plan.currentStep,
+        content: content || `完成了 ${currentStep.name}`,
+        duration: currentStep.duration
+      }
+    });
+
+    // 计算下一步
+    let nextStep;
+    let nextModule = plan.currentModule;
+
+    if (currentStepIndex < currentModule.steps.length - 1) {
+      // 当前模块还有下一步
+      nextStep = currentModule.steps[currentStepIndex + 1];
+    } else {
+      // 当前模块完成，找下一个模块
+      const nextModuleIndex = projectConfig.modules.findIndex(m => m.id === plan.currentModule);
+      if (nextModuleIndex >= 0 && nextModuleIndex < projectConfig.modules.length - 1) {
+        const nextModuleConfig = projectConfig.modules[nextModuleIndex + 1];
+        nextModule = nextModuleConfig.id;
+        nextStep = nextModuleConfig.steps[0];
+      }
+    }
+
+    // 更新学习计划进度
+    const updateData: any = {
+      lastActiveAt: new Date()
+    };
+
+    if (nextStep) {
+      updateData.currentStep = nextStep.id;
+      updateData.currentModule = nextModule;
+    }
+
+    // 计算进度
+    if (nextStep) {
+      const totalSteps = projectConfig.modules.reduce((sum, m) => sum + m.steps.length, 0);
+      const completedSteps = await prisma.studyCheckpoint.count({
+        where: { planId: plan.id }
+      });
+      updateData.totalProgress = Math.round((completedSteps / totalSteps) * 100);
+    }
+
+    await prisma.studyPlan.update({
+      where: { id: plan.id },
+      data: updateData
+    });
+
+    // 生成个性化回复（使用 studyStyle）
+    const style = getAIStyle(user.studyStyle || 'teacher');
+
+    let replyMsg = `✅ 学习打卡成功！\n\n` +
+      `📝 已完成：${currentStep.name}\n` +
+      `📖 模块：${currentModule.title}\n`;
+
+    if (content) {
+      replyMsg += `💭 心得：${content}\n`;
+    }
+
+    if (nextStep) {
+      replyMsg += `\n👉 下一步任务：\n${nextStep.name}（${nextStep.duration}分钟）`;
+    } else {
+      replyMsg += `\n🎉 恭喜！你已完成所有学习内容！`;
+    }
+
+    // 添加风格化鼓励
+    if (style.id === 'teacher') {
+      replyMsg += `\n\n💡 老师点评：\n`;
+      if (nextStep) {
+        replyMsg += `很好的开始！继续保持学习的节奏，${nextStep.name} 会让你更深入地理解这个主题。`;
+      } else {
+        replyMsg += `太棒了！你已经完成了整个学习计划，这是你努力的成果。继续保持这份学习的热情！`;
+      }
+    }
+
+    sendReply(ws, event, replyMsg);
+
+  } catch (error) {
+    console.error('学习打卡失败:', error);
+    sendReply(ws, event, '❌ 打卡失败，请稍后重试');
+  }
+}
+
+/**
+ * 处理查看学习进度
+ */
+async function handleStudyStatus(
+  ws: WebSocket,
+  event: Message,
+  projectKey: string
+): Promise<void> {
+  const userId = event.user_id!;
+  const qqNumber = userId.toString();
+
+  try {
+    // 获取用户
+    const user = await prisma.user.findUnique({
+      where: { qqNumber },
+      select: { id: true, nickname: true, studyStyle: true }
+    });
+
+    if (!user) {
+      sendReply(ws, event, '❌ 你还没有注册');
+      return;
+    }
+
+    // 获取学习计划
+    const plan = await prisma.studyPlan.findFirst({
+      where: {
+        userId: user.id,
+        project: {
+          projectKey
+        }
+      },
+      include: {
+        project: true,
+        checkpoints: {
+          orderBy: { completedAt: 'desc' },
+          take: 5
+        }
+      }
+    });
+
+    if (!plan) {
+      sendReply(ws, event, `❌ 你还没有加入 ${projectKey} 学习计划`);
+      return;
+    }
+
+    // 获取项目配置
+    const projectConfig = getProjectConfig(projectKey);
+    if (!projectConfig) {
+      sendReply(ws, event, `❌ 项目配置未找到：${projectKey}`);
+      return;
+    }
+
+    // 获取当前模块
+    const currentModule = projectConfig.modules.find(m => m.id === plan.currentModule);
+    const currentStep = currentModule?.steps.find(s => s.id === plan.currentStep);
+
+    let statusMsg = `📊 ${plan.project.name} 学习进度\n\n` +
+      `👤 学员：${user.nickname}\n` +
+      `📈 总进度：${plan.totalProgress}%\n` +
+      `⏰ 加入时间：${new Date(plan.joinedAt).toLocaleDateString('zh-CN')}\n\n`;
+
+    if (currentModule && currentStep) {
+      statusMsg += `📍 当前任务：\n` +
+        `📖 模块：${currentModule.title}\n` +
+        `🎯 步骤：${currentStep.name}（${currentStep.duration}分钟）\n` +
+        `📝 说明：${currentStep.description}\n\n`;
+    }
+
+    // 最近打卡记录
+    if (plan.checkpoints.length > 0) {
+      statusMsg += `📝 最近打卡：\n`;
+      plan.checkpoints.slice(0, 3).forEach((cp, index) => {
+        statusMsg += `${index + 1}. ${cp.content} (${new Date(cp.completedAt).toLocaleDateString('zh-CN')})\n`;
+      });
+    }
+
+    // 添加学习建议（根据 studyStyle）
+    const style = getAIStyle(user.studyStyle || 'teacher');
+    if (style.id === 'teacher') {
+      statusMsg += `\n💡 学习建议：\n`;
+      if (plan.totalProgress < 20) {
+        statusMsg += `刚开始学习，重点是建立习惯。每天坚持一点点，比一次学很久更重要。`;
+      } else if (plan.totalProgress < 50) {
+        statusMsg += `学习节奏很好！继续保持，可以尝试结合实践来加深理解。`;
+      } else if (plan.totalProgress < 80) {
+        statusMsg += `已经过半了！可以开始总结学到的知识，尝试应用到实际场景中。`;
+      } else {
+        statusMsg += `快要完成了！回顾整个学习过程，总结经验，准备迎接新的挑战！`;
+      }
+    }
+
+    statusMsg += `\n\n💡 完成当前任务后使用：/study ${projectKey} checkin [内容]`;
+
+    sendReply(ws, event, statusMsg);
+
+  } catch (error) {
+    console.error('查看学习进度失败:', error);
+    sendReply(ws, event, '❌ 查询失败，请稍后重试');
+  }
+}
+
+/**
+ * 处理切换学习提醒
+ */
+async function handleStudyReminderToggle(
+  ws: WebSocket,
+  event: Message,
+  projectKey: string,
+  status: string
+): Promise<void> {
+  const userId = event.user_id!;
+  const qqNumber = userId.toString();
+
+  try {
+    const user = await prisma.user.findUnique({
+      where: { qqNumber }
+    });
+
+    if (!user) {
+      sendReply(ws, event, '❌ 你还没有注册');
+      return;
+    }
+
+    const reminderEnabled = status === 'on' || status === '开启' || status === 'open';
+
+    const result = await prisma.studyPlan.updateMany({
+      where: {
+        userId: user.id,
+        project: {
+          projectKey
+        }
+      },
+      data: {
+        reminderEnabled
+      }
+    });
+
+    if (result.count === 0) {
+      sendReply(ws, event, `❌ 你还没有加入 ${projectKey} 学习计划`);
+      return;
+    }
+
+    sendReply(ws, event,
+      `✅ 学习提醒已${reminderEnabled ? '开启' : '关闭'}\n\n` +
+      `每天 19:00 会发送学习提醒（如已开启）`
+    );
+
+  } catch (error) {
+    console.error('切换提醒失败:', error);
+    sendReply(ws, event, '❌ 操作失败，请稍后重试');
+  }
+}
+
+/**
+ * 处理发送学习更新通知（管理员）
+ */
+async function handleNotifyMinimindCommand(
+  ws: WebSocket,
+  event: Message,
+  args: string[]
+): Promise<void> {
+  if (args.length === 0) {
+    sendReply(ws, event,
+      '用法：/notify-minimind [标题] [内容]\n\n' +
+      '示例：/notify-minimind 新增模块 02-position 位置编码模块已上线'
+    );
+    return;
+  }
+
+  const title = args[0];
+  const content = args.slice(1).join(' ');
+
+  try {
+    // 获取所有参与 MiniMind 的用户
+    const plans = await prisma.studyPlan.findMany({
+      where: {
+        project: {
+          projectKey: 'minimind'
+        },
+        reminderEnabled: true
+      },
+      include: {
+        user: {
+          select: { qqNumber: true, nickname: true }
+        }
+      }
+    });
+
+    if (plans.length === 0) {
+      sendReply(ws, event, '⚠️ 暂无用户参与 MiniMind 学习计划');
+      return;
+    }
+
+    // 构建通知消息
+    let notifyMsg = `📢 MiniMind 学习教程更新通知！\n\n` +
+      `🆕 ${title}\n`;
+
+    if (content) {
+      notifyMsg += `${content}\n\n`;
+    }
+
+    notifyMsg += `🔗 相关资源：\n` +
+      `📖 学习网站：https://minimind-notes.vercel.app/\n` +
+      `💻 GitHub 仓库：https://github.com/joyehuang/minimind-notes\n\n` +
+      `💡 提示：使用 /study minimind status 查看你的学习任务\n` +
+      `🆕 加入学习：/study minimind join\n\n` +
+      `---\n` +
+      `更新时间：${new Date().toLocaleString('zh-CN')}`;
+
+    // @ 所有参与用户
+    const mentions = plans.map(p => `[CQ:at,qq=${p.user.qqNumber}]`).join(' ');
+
+    // 发送到群组
+    if (!REMINDER_GROUP_ID) {
+      sendReply(ws, event, '❌ 督促群未配置（REMINDER_GROUP_ID）');
+      return;
+    }
+
+    sendGroupMessage(ws, REMINDER_GROUP_ID, `${mentions}\n\n${notifyMsg}`);
+
+    sendReply(ws, event, `✅ 更新通知已发送给 ${plans.length} 位参与者`);
+
+  } catch (error) {
+    console.error('发送更新通知失败:', error);
+    sendReply(ws, event, '❌ 发送失败，请稍后重试');
+  }
+}
+
+/**
+ * 处理更新学习路径（管理员）
+ */
+async function handleUpdateMinimindCommand(
+  ws: WebSocket,
+  event: Message
+): Promise<void> {
+  try {
+    // 获取项目配置
+    const projectConfig = getProjectConfig('minimind');
+    if (!projectConfig) {
+      sendReply(ws, event, '❌ 未找到 MiniMind 配置');
+      return;
+    }
+
+    // 更新或创建项目记录
+    const project = await prisma.studyProject.upsert({
+      where: { projectKey: 'minimind' },
+      update: {
+        name: projectConfig.name,
+        description: projectConfig.description,
+        config: JSON.stringify({
+          modules: projectConfig.modules
+        }),
+        updatedAt: new Date()
+      },
+      create: {
+        projectKey: 'minimind',
+        name: projectConfig.name,
+        description: projectConfig.description,
+        isActive: true,
+        config: JSON.stringify({
+          modules: projectConfig.modules
+        })
+      }
+    });
+
+    // 获取参与用户统计
+    const plansCount = await prisma.studyPlan.count({
+      where: { projectId: project.id }
+    });
+
+    const activeCount = await prisma.studyPlan.count({
+      where: {
+        projectId: project.id,
+        reminderEnabled: true
+      }
+    });
+
+    sendReply(ws, event,
+      `✅ 学习路径配置已更新\n\n` +
+      `📚 ${project.name}\n` +
+      `📖 共 ${projectConfig.modules.length} 个模块\n` +
+      `👥 ${plansCount} 位用户正在参与\n` +
+      `🔔 ${activeCount} 位开启提醒\n\n` +
+      `💡 使用 /notify-minimind [标题] [内容] 发送更新通知`
+    );
+
+  } catch (error) {
+    console.error('更新学习路径失败:', error);
+    sendReply(ws, event, '❌ 更新失败，请稍后重试');
+  }
+}
+
+/**
+ * 处理查看项目统计（管理员）
+ */
+async function handleMinimindStatusCommand(
+  ws: WebSocket,
+  event: Message
+): Promise<void> {
+  try {
+    const project = await prisma.studyProject.findUnique({
+      where: { projectKey: 'minimind' },
+      include: {
+        plans: {
+          include: {
+            user: {
+              select: { nickname: true, qqNumber: true }
+            }
+          },
+          orderBy: {
+            totalProgress: 'desc'
+          }
+        }
+      }
+    });
+
+    if (!project) {
+      sendReply(ws, event, '❌ 未找到 MiniMind 项目');
+      return;
+    }
+
+    const totalUsers = project.plans.length;
+    const activeUsers = project.plans.filter(p => p.reminderEnabled).length;
+
+    // 进度分布
+    const progressDistribution: Record<string, number> = {};
+    project.plans.forEach(plan => {
+      const range = `${Math.floor(plan.totalProgress / 10) * 10}-${Math.floor(plan.totalProgress / 10) * 10 + 10}%`;
+      progressDistribution[range] = (progressDistribution[range] || 0) + 1;
+    });
+
+    let statusMsg = `📊 MiniMind 项目统计\n\n` +
+      `👥 参与人数：${totalUsers}\n` +
+      `🔔 开启提醒：${activeUsers}\n\n` +
+      `📈 进度分布：\n`;
+
+    Object.entries(progressDistribution)
+      .sort((a, b) => parseInt(a[0]) - parseInt(b[0]))
+      .forEach(([range, count]) => {
+        statusMsg += `  ${range}: ${count} 人\n`;
+      });
+
+    // 前3名
+    if (project.plans.length > 0) {
+      statusMsg += `\n🏆 学习排行榜（前3名）：\n`;
+      project.plans.slice(0, 3).forEach((plan, index) => {
+        const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : '🥉';
+        statusMsg += `${medal} ${plan.user.nickname} - ${plan.totalProgress}%\n`;
+      });
+    }
+
+    sendReply(ws, event, statusMsg);
+
+  } catch (error) {
+    console.error('查看项目统计失败:', error);
+    sendReply(ws, event, '❌ 查询失败，请稍后重试');
+  }
+}
+
+// ==================== 学习系统函数结束 ====================
+
 // 启动打卡督促定时器
 function startReminderTimer(ws: WebSocket): void {
   if (!SUPER_ADMIN_QQ || !REMINDER_GROUP_ID) {
@@ -3291,6 +4102,9 @@ function connectBot() {
     // 启动断签提醒定时器
     startStreakWarningTimer(ws);
     startStreakTauntTimer(ws);
+
+    // 启动学习督促定时器
+    startStudyReminderTimer(ws);
 
     // 启动年度报告定时器
     startYearlyReportScheduler(ws);
@@ -3747,6 +4561,44 @@ function connectBot() {
             `🕐 时间: ${lastCheckin.createdAt.toLocaleString('zh-CN', { timeZone: 'Australia/Melbourne' })}`
           );
           break;
+
+        // ==================== 学习系统指令 ====================
+        case '我想学习':
+        case '加入学习':
+        case '学习打卡':
+          // 快捷指令（向后兼容）
+          args = ['minimind', 'join'];
+          // fallthrough
+
+        case '/study':
+        case '/study-join':
+          await handleStudyCommand(ws, event, args);
+          break;
+
+        case '/notify-minimind':
+          if (!isSuperAdmin) {
+            sendReply(ws, event, '只有超级管理员才能发送学习更新通知');
+            break;
+          }
+          await handleNotifyMinimindCommand(ws, event, args);
+          break;
+
+        case '/update-minimind':
+          if (!isSuperAdmin) {
+            sendReply(ws, event, '只有超级管理员才能更新学习路径');
+            break;
+          }
+          await handleUpdateMinimindCommand(ws, event);
+          break;
+
+        case '/minimind-status':
+          if (!isSuperAdmin) {
+            sendReply(ws, event, '只有超级管理员才能查看项目统计');
+            break;
+          }
+          await handleMinimindStatusCommand(ws, event);
+          break;
+        // ==================== 学习系统指令结束 ====================
 
         case '帮助':
         case 'help':
