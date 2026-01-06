@@ -4567,8 +4567,8 @@ function connectBot() {
         case '加入学习':
         case '学习打卡':
           // 快捷指令（向后兼容）
-          args = ['minimind', 'join'];
-          // fallthrough
+          await handleStudyCommand(ws, event, ['minimind', 'join']);
+          break;
 
         case '/study':
         case '/study-join':
