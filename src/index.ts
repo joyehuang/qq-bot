@@ -3901,6 +3901,215 @@ async function handleMinimindStatusCommand(
 
 // ==================== 学习系统函数结束 ====================
 
+/**
+ * 获取最近的 Git commits
+ */
+async function getRecentCommits(count: number = 1): Promise<string[]> {
+  try {
+    // 使用 git log 获取最近的 commits
+    const { exec } = require('child_process');
+    const util = require('util');
+    const execAsync = util.promisify(exec);
+
+    const format = `--pretty=format:%H|%s|%b`;
+    const command = `git log -n ${count} ${format}`;
+
+    const { stdout } = await execAsync(command, {
+      cwd: process.cwd(),
+      encoding: 'utf8'
+    });
+
+    const commits = stdout.trim().split('\n').filter((line: string) => line);
+    return commits;
+  } catch (error) {
+    console.error('获取 git commits 失败:', error);
+    return [];
+  }
+}
+
+/**
+ * 生成功能发布公告（AI 排版）
+ */
+async function generateAnnouncement(commits: string[]): Promise<string> {
+  // 提取 commit 信息
+  const commitInfo = commits.map(commit => {
+    const [sha, subject, body] = commit.split('|');
+    return { sha, subject, body: body || '' };
+  });
+
+  // 如果只有一个 commit，使用单个 commit 的信息
+  const mainCommit = commitInfo[0];
+  const commitMsg = `${mainCommit.subject}\n\n${mainCommit.body}`.trim();
+
+  // 构建 AI prompt
+  const systemPrompt = `你是一个专业的产品发布公告撰写助手。你的任务是将 Git commit 信息转换成美观、易读的功能发布公告。
+
+要求：
+1. 使用 emoji 图标让公告更生动
+2. 将 commit 内容按功能模块分类
+3. 提取关键变更点
+4. 生成适合在 QQ 群发布的格式（使用纯文本，支持 emoji）
+5. 语言简洁明了，突出重点
+6. 不要编造 commit 中没有的内容
+7. 公告格式应该包含：
+   - 标题（功能概览）
+   - 主要功能列表（用 emoji 标记）
+   - 分隔线美化
+   - 结尾信息（发布时间、commit sha）
+
+输出格式示例：
+🎉 新功能上线：[功能标题]
+
+✨ 主要更新
+━━━━━━━━━━━━━━━━━━━━━━
+
+📚 [功能模块 1]
+  • 功能点 1
+  • 功能点 2
+
+🎨 [功能模块 2]
+  • 功能点 1
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+📖 查看完整文档：COMMANDS.md
+
+发布时间：[日期]
+Commit：[sha 前7位]`;
+
+  // 调用 AI 生成公告
+  let announcement = '';
+  if (AI_API_KEY) {
+    try {
+      const aiResult = await callAI(
+        systemPrompt,
+        `请基于以下 Git commit 信息生成功能发布公告：\n\n${commitMsg}`
+      );
+
+      if (!aiResult) {
+        throw new Error('AI 返回为空');
+      }
+      announcement = aiResult;
+    } catch (error) {
+      console.error('AI 生成公告失败，使用备用方案:', error);
+      announcement = generateFallbackAnnouncement(commitInfo);
+    }
+  } else {
+    console.log('未配置 AI_API_KEY，使用备用方案');
+    announcement = generateFallbackAnnouncement(commitInfo);
+  }
+
+  return announcement;
+}
+
+/**
+ * 备用公告生成方案（无 AI 时使用）
+ */
+function generateFallbackAnnouncement(commits: Array<{ sha: string; subject: string; body: string }>): string {
+  const mainCommit = commits[0];
+
+  let announcement = `🎉 新功能上线：${mainCommit.subject.split(':')[1].trim()}\n\n`;
+  announcement += `✨ 主要更新\n`;
+  announcement += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+  // 解析 commit body
+  const lines = mainCommit.body.split('\n').filter(line => line.trim());
+  const features: string[] = [];
+  const currentFeature: string[] = [];
+
+  lines.forEach((line: string) => {
+    if (line.startsWith('- ')) {
+      if (line.match(/^- [✨🎨📝🔧📚]? /)) {
+        // 功能分类行
+        if (currentFeature.length > 0) {
+          features.push(currentFeature.join('\n'));
+        }
+        const newFeature = [line];
+        features.push(newFeature.join('\n'));
+        currentFeature.length = 0;
+      } else {
+        currentFeature.push(line);
+      }
+    }
+  });
+
+  if (currentFeature.length > 0) {
+    features.push(currentFeature.join('\n'));
+  }
+
+  // 去重并添加
+  const uniqueFeatures = [...new Set(features)];
+  announcement += uniqueFeatures.join('\n\n');
+
+  announcement += `\n\n━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+  announcement += `📖 查看完整文档：COMMANDS.md\n\n`;
+  announcement += `发布时间：${new Date().toLocaleDateString('zh-CN')}\n`;
+  announcement += `Commit：${mainCommit.sha.substring(0, 7)}`;
+
+  return announcement;
+}
+
+/**
+ * 处理发布公告命令（管理员）
+ */
+async function handleAnnounceCommand(
+  ws: WebSocket,
+  event: Message,
+  args: string[]
+): Promise<void> {
+  const userId = event.user_id?.toString() || '';
+  const isSuperAdmin = userId === SUPER_ADMIN_QQ;
+
+  if (!isSuperAdmin) {
+    sendReply(ws, event, '❌ 此命令仅超级管理员可用');
+    return;
+  }
+
+  let commitCount = 1;
+  if (args.length > 0 && !isNaN(parseInt(args[0]))) {
+    commitCount = parseInt(args[0]);
+  }
+
+  if (commitCount < 1 || commitCount > 10) {
+    sendReply(ws, event, '❌ commit 数量必须在 1-10 之间');
+    return;
+  }
+
+  try {
+    // 获取最近的 commits
+    const commits = await getRecentCommits(commitCount);
+
+    if (commits.length === 0) {
+      sendReply(ws, event, '❌ 未找到 commit 记录');
+      return;
+    }
+
+    sendReply(ws, event, `📝 正在生成公告，基于最近的 ${commits.length} 个 commit...\n\n请稍候...`);
+
+    // 生成公告
+    const announcement = await generateAnnouncement(commits);
+
+    // 发送公告到群组
+    if (!REMINDER_GROUP_ID) {
+      sendReply(ws, event, '❌ 督促群未配置（REMINDER_GROUP_ID）');
+      return;
+    }
+
+    sendGroupMessage(ws, REMINDER_GROUP_ID, announcement);
+
+    sendReply(ws, event, `✅ 公告已发送到群组\n\n` +
+      `📊 基于 ${commits.length} 个 commit 生成\n` +
+      `🎯 收到公告的用户：所有群成员`);
+
+  } catch (error) {
+    console.error('发布公告失败:', error);
+    sendReply(ws, event, '❌ 发布失败，请稍后重试\n\n' +
+      `错误信息：${error instanceof Error ? error.message : '未知错误'}`);
+  }
+}
+
+// ==================== 公告系统函数结束 ====================
+
 // 启动打卡督促定时器
 function startReminderTimer(ws: WebSocket): void {
   if (!SUPER_ADMIN_QQ || !REMINDER_GROUP_ID) {
@@ -4597,6 +4806,10 @@ function connectBot() {
             break;
           }
           await handleMinimindStatusCommand(ws, event);
+          break;
+
+        case '/announce':
+          await handleAnnounceCommand(ws, event, args);
           break;
         // ==================== 学习系统指令结束 ====================
 

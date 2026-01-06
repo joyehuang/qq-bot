@@ -239,6 +239,7 @@
 | `删除管理` / `删除管理员` / `移除管理` / `移除管理员` | 删除管理员 | `删除管理 123456789` |
 | `督促` / `测试督促` | 手动触发打卡督促（测试用） | `督促` |
 | `测试年报` | 测试年度报告功能，私聊发送 | `测试年报` |
+| `/announce` / `/announce [数量]` | 发布功能更新公告（基于 Git Commit + AI 排版） | `/announce` 或 `/announce 3` |
 | `发布更新` / `版本更新` / `更新通知` | 发送版本更新通知到群 | `发布更新 新增AI分析功能` |
 
 **测试模式说明：**
@@ -280,6 +281,7 @@
 | `/notify-minimind [标题] [内容]` | 发送学习更新通知 | `/notify-minimind 新增模块 02-position` |
 | `/update-minimind` | 更新学习路径配置 | `/update-minimind` |
 | `/minimind-status` | 查看项目统计 | `/minimind-status` |
+| `/announce` / `/announce [数量]` | 发布功能更新公告（基于 Git Commit + AI 排版） | `/announce` 或 `/announce 3` |
 
 ### MiniMind 学习计划
 
