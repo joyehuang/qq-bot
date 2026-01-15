@@ -259,7 +259,7 @@ jobs:
     needs: [detect-changes, build-bot, build-admin-server, build-admin-web]
     if: |
       always() &&
-      github.event_name == 'push' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/main' &&
       (
         needs.detect-changes.outputs.bot == 'true' ||
