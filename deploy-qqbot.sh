@@ -18,16 +18,17 @@ echo "  - 更新 Admin Server: $UPDATE_ADMIN_SERVER"
 echo "  - 更新 Admin Web: $UPDATE_ADMIN_WEB"
 echo "  - GitHub Owner: $GITHUB_REPOSITORY_OWNER"
 
-echo "📥 拉取最新代码..."
-git pull origin main
-
-echo "🔍 检查文件完整性..."
-if git diff --quiet HEAD; then
-  echo "✅ 所有文件与远程版本一致"
-else
+echo "🔍 检查本地状态..."
+if ! git diff --quiet || ! git diff --cached --quiet; then
   echo "⚠️ 检测到本地修改，恢复到远程版本..."
   git restore .
+  git clean -fd
 fi
+
+echo "📥 拉取最新代码..."
+git config pull.rebase false  # 使用 merge 策略
+git fetch origin main
+git reset --hard origin/main
 
 # 加载环境变量（确保有 GHCR token）
 if [ -f .env ]; then
