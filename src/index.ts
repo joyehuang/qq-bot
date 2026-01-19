@@ -2588,6 +2588,8 @@ async function checkPotentialStreakBreaks(): Promise<{ userId: number; qqNumber:
   });
 
   const today = getTodayStart();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
   const now = new Date();
 
   for (const user of usersWithStreak) {
@@ -2621,7 +2623,8 @@ async function checkStreakBreaks(): Promise<{ userId: number; qqNumber: string; 
   // 获取所有连续打卡>=5天的用户
   const usersWithStreak = await prisma.user.findMany({
     where: {
-      streakDays: { gte: MIN_STREAK_FOR_REMINDER }
+      streakDays: { gte: MIN_STREAK_FOR_REMINDER },
+      lastCheckinDate: { gte: yesterday }
     }
   });
 
@@ -2652,6 +2655,11 @@ async function checkStreakBreaks(): Promise<{ userId: number; qqNumber: string; 
         qqNumber: user.qqNumber,
         nickname: user.nickname,
         brokenStreak: user.streakDays
+      });
+
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { streakDays: 0 }
       });
     }
   }
