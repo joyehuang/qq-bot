@@ -2580,17 +2580,18 @@ async function checkAdminCheckin(): Promise<boolean> {
 async function checkPotentialStreakBreaks(): Promise<{ userId: number; qqNumber: string; nickname: string; currentStreak: number }[]> {
   const potentialBreaks: { userId: number; qqNumber: string; nickname: string; currentStreak: number }[] = [];
 
-  // 获取所有连续打卡>=5天的用户
-  const usersWithStreak = await prisma.user.findMany({
-    where: {
-      streakDays: { gte: MIN_STREAK_FOR_REMINDER }
-    }
-  });
-
   const today = getTodayStart();
   const yesterday = new Date(today);
   yesterday.setDate(yesterday.getDate() - 1);
   const now = new Date();
+
+  // 获取所有连续打卡>=5天的用户（且最近一次打卡不早于昨天）
+  const usersWithStreak = await prisma.user.findMany({
+    where: {
+      streakDays: { gte: MIN_STREAK_FOR_REMINDER },
+      lastCheckinDate: { gte: yesterday }
+    }
+  });
 
   for (const user of usersWithStreak) {
     // 检查今天是否已经打卡
@@ -2620,17 +2621,17 @@ async function checkPotentialStreakBreaks(): Promise<{ userId: number; qqNumber:
 async function checkStreakBreaks(): Promise<{ userId: number; qqNumber: string; nickname: string; brokenStreak: number }[]> {
   const brokenUsers: { userId: number; qqNumber: string; nickname: string; brokenStreak: number }[] = [];
 
-  // 获取所有连续打卡>=5天的用户
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  yesterday.setHours(0, 0, 0, 0);
+
+  // 获取所有连续打卡>=5天的用户（且最近一次打卡不早于昨天）
   const usersWithStreak = await prisma.user.findMany({
     where: {
       streakDays: { gte: MIN_STREAK_FOR_REMINDER },
       lastCheckinDate: { gte: yesterday }
     }
   });
-
-  const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  yesterday.setHours(0, 0, 0, 0);
 
   const yesterdayEnd = new Date(yesterday);
   yesterdayEnd.setHours(23, 59, 59, 999);
