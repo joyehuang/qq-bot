@@ -2577,7 +2577,7 @@ async function checkAdminCheckin(): Promise<boolean> {
 }
 
 // 检查潜在断签用户（今天还没打卡的连续打卡>=5天的用户）
-async function checkPotentialStreakBreaks(): Promise<{ userId: number; qqNumber: string; nickname: string; currentStreak: number }[]> {
+/* async function checkPotentialStreakBreaks(): Promise<{ userId: number; qqNumber: string; nickname: string; currentStreak: number }[]> {
   const potentialBreaks: { userId: number; qqNumber: string; nickname: string; currentStreak: number }[] = [];
 
   const today = getTodayStart();
@@ -2615,10 +2615,10 @@ async function checkPotentialStreakBreaks(): Promise<{ userId: number; qqNumber:
   }
 
   return potentialBreaks;
-}
+} */
 
 // 检查所有用户的断签情况（只检查连续打卡>=5天的用户）
-async function checkStreakBreaks(): Promise<{ userId: number; qqNumber: string; nickname: string; brokenStreak: number }[]> {
+/* async function checkStreakBreaks(): Promise<{ userId: number; qqNumber: string; nickname: string; brokenStreak: number }[]> {
   const brokenUsers: { userId: number; qqNumber: string; nickname: string; brokenStreak: number }[] = [];
 
   const yesterday = new Date();
@@ -2666,7 +2666,7 @@ async function checkStreakBreaks(): Promise<{ userId: number; qqNumber: string; 
   }
 
   return brokenUsers;
-}
+} */
 
 // 获取下次定时任务时间（毫秒）
 function getNextScheduledTime(hour: number, minute: number): number {
@@ -2688,7 +2688,7 @@ function getNextScheduledTime(hour: number, minute: number): number {
 }
 
 // 断签警告定时器
-let streakWarningTimer: NodeJS.Timeout | null = null;
+/* let streakWarningTimer: NodeJS.Timeout | null = null;
 
 function startStreakWarningTimer(ws: WebSocket): void {
   if (!REMINDER_GROUP_ID) {
@@ -2732,10 +2732,10 @@ function startStreakWarningTimer(ws: WebSocket): void {
   };
 
   scheduleNextWarning();
-}
+} */
 
 // 断签调侃定时器
-let streakTauntTimer: NodeJS.Timeout | null = null;
+/* let streakTauntTimer: NodeJS.Timeout | null = null;
 
 function startStreakTauntTimer(ws: WebSocket): void {
   if (!REMINDER_GROUP_ID) {
@@ -2780,7 +2780,7 @@ function startStreakTauntTimer(ws: WebSocket): void {
   };
 
   scheduleNextTaunt();
-}
+} */
 
 // 获取下次督促时间（毫秒）
 function getNextReminderTime(): number {
@@ -3878,9 +3878,9 @@ function connectBot() {
     // 启动打卡督促定时器
     startReminderTimer(ws);
 
-    // 启动断签提醒定时器
-    startStreakWarningTimer(ws);
-    startStreakTauntTimer(ws);
+    // 启动断签提醒定时器（暂时禁用：该功能目前有 bug）
+    // startStreakWarningTimer(ws);
+    // startStreakTauntTimer(ws);
 
     // 启动学习督促定时器
     startStudyReminderTimer(ws);
