@@ -263,6 +263,7 @@ npx ts-node src/index.ts
 | `/study minimind status` | 查看学习进度 |
 | `/study minimind checkin [内容]` | 学习打卡 |
 | `/study minimind reminder [on/off]` | 开关学习提醒 |
+| `/study minimind leave` | 退出学习计划 |
 
 **学习系统特性：**
 - 📚 **结构化学习路径**：模块化学习，清晰的任务分解

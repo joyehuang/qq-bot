@@ -2940,12 +2940,14 @@ async function handleStudyCommand(
       '  join        - 加入学习计划\n' +
       '  checkin     - 学习打卡\n' +
       '  status      - 查看进度\n' +
-      '  reminder    - 开关提醒\n\n' +
+      '  reminder    - 开关提醒\n' +
+      '  leave       - 退出学习计划\n\n' +
       '示例：\n' +
       '  /study minimind join\n' +
       '  /study minimind checkin 今天学会了提示词工程\n' +
       '  /study minimind status\n' +
-      '  /study minimind reminder on/off';
+      '  /study minimind reminder on/off\n' +
+      '  /study minimind leave';
 
     sendReply(ws, event, helpMsg);
     return;
@@ -2974,6 +2976,10 @@ async function handleStudyCommand(
 
     case 'reminder':
       await handleStudyReminderToggle(ws, event, projectKey, params[0]);
+      break;
+
+    case 'leave':
+      await handleStudyLeave(ws, event, projectKey);
       break;
 
     default:
@@ -3404,6 +3410,56 @@ async function handleStudyReminderToggle(
   } catch (error) {
     console.error('切换提醒失败:', error);
     sendReply(ws, event, '❌ 操作失败，请稍后重试');
+  }
+}
+
+/**
+ * 处理退出学习计划
+ */
+async function handleStudyLeave(
+  ws: WebSocket,
+  event: Message,
+  projectKey: string
+): Promise<void> {
+  const userId = event.user_id!;
+  const qqNumber = userId.toString();
+
+  try {
+    const user = await prisma.user.findUnique({
+      where: { qqNumber }
+    });
+
+    if (!user) {
+      sendReply(ws, event, '❌ 你还没有注册');
+      return;
+    }
+
+    const projectConfig = getProjectConfig(projectKey);
+    const projectName = projectConfig?.name || projectKey;
+
+    const result = await prisma.studyPlan.deleteMany({
+      where: {
+        userId: user.id,
+        project: {
+          projectKey
+        }
+      }
+    });
+
+    if (result.count === 0) {
+      sendReply(ws, event, `❌ 你还没有加入 ${projectName}`);
+      return;
+    }
+
+    sendReply(ws, event,
+      `✅ 已退出 ${projectName}\n\n` +
+      `⚠️ 进度与学习记录已清除\n` +
+      `💡 如需重新加入：/study ${projectKey} join`
+    );
+
+  } catch (error) {
+    console.error('退出学习计划失败:', error);
+    sendReply(ws, event, '❌ 退出失败，请稍后重试');
   }
 }
 
@@ -4388,23 +4444,8 @@ function connectBot() {
             '/study-join - 加入MiniMind学习计划\n' +
             '/study minimind status - 查看学习进度\n' +
             '/study minimind checkin [内容] - 学习打卡\n' +
-            '/study minimind reminder on/off - 开关提醒';
-
-          if (isAdmin) {
-            helpMsg += '\n\n👑 管理员命令:\n' +
-              '闭嘴/关机 - 关闭机器人\n' +
-              '开机/醒醒 - 开启机器人\n' +
-              '管理员列表 - 查看管理员';
-          }
-
-          if (isSuperAdmin) {
-            helpMsg += '\n\n⭐ 超管命令:\n' +
-              '测试模式 - 切换测试模式（打卡不保存）\n' +
-              '添加管理 [QQ] - 添加管理员\n' +
-              '删除管理 [QQ] - 删除管理员\n' +
-              '督促 - 测试打卡督促\n' +
-              '发布更新 [内容] - 发送版本更新通知';
-          }
+            '/study minimind reminder on/off - 开关提醒\n' +
+            '/study minimind leave - 退出学习计划';
 
           sendReply(ws, event, helpMsg);
           break;
