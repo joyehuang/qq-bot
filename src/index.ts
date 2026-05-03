@@ -73,50 +73,35 @@ const VERSION_FEATURES = [
   '撤销打卡功能'
 ];
 
-// AI 配置
-const AI_API_URL = 'https://api.siliconflow.cn/v1/chat/completions';
-const AI_API_KEY = process.env.AI_API_KEY || '';
-const AI_MODEL = process.env.AI_MODEL || 'Qwen/Qwen2.5-32B-Instruct';
-
-// AI 调用函数
-async function callAI(
+async function callHermesAgent(
   systemPrompt: string,
   userPrompt: string,
-  options?: { maxTokens?: number; temperature?: number; model?: string }
+  model?: string
 ): Promise<string | null> {
-  if (!AI_API_KEY) {
-    return null;
-  }
+  const { execSync } = require('child_process');
+  const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
 
   try {
-    const response = await fetch(AI_API_URL, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${AI_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: options?.model || AI_MODEL,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
-        ],
-        max_tokens: options?.maxTokens || 200,
-        temperature: options?.temperature ?? 0.7
-      })
-    });
-
-    if (!response.ok) {
-      console.error('AI API 错误:', response.status);
-      return null;
+    const modelFlag = model ? `-m ${model}` : '';
+    const result = execSync(
+      `hermes chat -q ${JSON.stringify(fullPrompt)} -Q ${modelFlag}`,
+      { encoding: 'utf-8', timeout: 30000, maxBuffer: 1024 * 1024 }
+    );
+    // Parse output: first line is 'session_id: xxx', rest is the response
+    const lines = result.trim().split('\n');
+    if (lines.length > 1 && lines[0].startsWith('session_id:')) {
+      return lines.slice(1).join('\n').trim();
     }
-
-    const data = await response.json() as any;
-    return data.choices?.[0]?.message?.content || null;
+    return result.trim();
   } catch (error) {
-    console.error('AI 调用失败:', error);
+    console.error('Hermes Agent 调用失败:', error);
     return null;
   }
+}
+
+// AI 调用函数
+async function callAI(systemPrompt: string, userPrompt: string): Promise<string | null> {
+  return callHermesAgent(systemPrompt, userPrompt);
 }
 
 // AI 自动分类打卡内容
@@ -282,10 +267,6 @@ async function classifyCheckin(content: string): Promise<ClassificationResult> {
   }
 
   // 无法快速匹配，调用 AI 分类
-  if (!AI_API_KEY) {
-    return { category: '其他', subcategory: '' };
-  }
-
   const systemPrompt = `你是一个智能分类助手。根据用户的打卡内容，判断它属于哪个分类。
 
 ⚠️ 重要：必须严格按照以下分类返回，不得自创分类名称！
@@ -323,7 +304,7 @@ async function classifyCheckin(content: string): Promise<ClassificationResult> {
   const userPrompt = `请分类以下打卡内容：\n${content}`;
 
   try {
-    const aiResponse = await callAI(systemPrompt, userPrompt, { temperature: 0.3 });
+    const aiResponse = await callAI(systemPrompt, userPrompt);
     if (aiResponse) {
       const result = JSON.parse(aiResponse.trim());
       return result;
@@ -418,11 +399,6 @@ async function generateAIEncouragement(
   user: { nickname: string; aiStyle: string; streakDays: number; dailyGoal: number | null },
   checkinInfo: { duration: number; content: string; todayMinutes: number; isGoalAchieved: boolean }
 ): Promise<string> {
-  // 如果没有 AI API Key，回退到随机鼓励语
-  if (!AI_API_KEY) {
-    return getRandomEncouragement();
-  }
-
   try {
     const style = getAIStyle(user.aiStyle);
     const userPrompt = `用户 ${user.nickname} 刚刚完成了一次打卡：
