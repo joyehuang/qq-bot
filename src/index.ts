@@ -578,10 +578,6 @@ const STREAK_TAUNT_HOUR = parseInt(process.env.STREAK_TAUNT_HOUR || '9'); // 断
 const STREAK_TAUNT_MINUTE = parseInt(process.env.STREAK_TAUNT_MINUTE || '0'); // 断签调侃时间（分钟）
 const MIN_STREAK_FOR_REMINDER = 5; // 最少连续打卡天数才会被提醒（警告+调侃）
 
-// GitHub 配置
-const GITHUB_USERNAME = process.env.GITHUB_USERNAME || '';
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN || ''; // 用于访问私有仓库
-
 // 头衔系统配置
 const TITLE_GROUP_ID = process.env.TITLE_GROUP_ID || REMINDER_GROUP_ID; // 启用头衔功能的群号（默认和督促群相同）
 const DEBT_THRESHOLD = parseInt(process.env.DEBT_THRESHOLD || '300'); // 打卡老赖阈值（分钟，默认5小时）
@@ -600,90 +596,6 @@ let botEnabled = true;
 
 // 定时器引用
 let reminderTimer: NodeJS.Timeout | null = null;
-
-// 获取 GitHub 今日提交数量
-async function getGitHubTodayCommits(username: string): Promise<{ count: number; repos: string[] }> {
-  // 使用配置的时区计算今天的日期范围
-  const now = new Date();
-  const todayInTimezone = new Date(now.toLocaleString('en-US', { timeZone: REMINDER_TIMEZONE }));
-  const todayStart = new Date(todayInTimezone);
-  todayStart.setHours(0, 0, 0, 0);
-
-  // 转换为 ISO 格式用于比较
-  const todayISO = todayStart.toISOString().split('T')[0];
-
-  try {
-    const headers: Record<string, string> = {
-      'Accept': 'application/vnd.github.v3+json',
-      'User-Agent': 'QQ-Bot'
-    };
-
-    if (GITHUB_TOKEN) {
-      headers['Authorization'] = `token ${GITHUB_TOKEN}`;
-    }
-
-    let commitCount = 0;
-    const repos = new Set<string>();
-
-    // 方法1: 获取用户事件（公开 + 有token时的私有）
-    const eventsResponse = await fetch(`https://api.github.com/users/${username}/events?per_page=100`, {
-      headers
-    });
-
-    if (eventsResponse.ok) {
-      const events = await eventsResponse.json() as any[];
-
-      for (const event of events) {
-        if (event.type === 'PushEvent') {
-          // 将事件时间转换为配置的时区
-          const eventTime = new Date(event.created_at);
-          const eventInTimezone = new Date(eventTime.toLocaleString('en-US', { timeZone: REMINDER_TIMEZONE }));
-          const eventDateISO = eventInTimezone.toISOString().split('T')[0];
-
-          if (eventDateISO === todayISO) {
-            const commits = event.payload?.commits?.length || 0;
-            commitCount += commits;
-            if (event.repo?.name) {
-              repos.add(event.repo.name.split('/')[1] || event.repo.name);
-            }
-          }
-        }
-      }
-    }
-
-    // 方法2: 如果有 token，额外获取私有仓库的事件
-    if (GITHUB_TOKEN) {
-      const privateEventsResponse = await fetch(`https://api.github.com/users/${username}/events/private?per_page=100`, {
-        headers
-      });
-
-      if (privateEventsResponse.ok) {
-        const privateEvents = await privateEventsResponse.json() as any[];
-
-        for (const event of privateEvents) {
-          if (event.type === 'PushEvent') {
-            const eventTime = new Date(event.created_at);
-            const eventInTimezone = new Date(eventTime.toLocaleString('en-US', { timeZone: REMINDER_TIMEZONE }));
-            const eventDateISO = eventInTimezone.toISOString().split('T')[0];
-
-            if (eventDateISO === todayISO) {
-              const commits = event.payload?.commits?.length || 0;
-              commitCount += commits;
-              if (event.repo?.name) {
-                repos.add(event.repo.name.split('/')[1] || event.repo.name);
-              }
-            }
-          }
-        }
-      }
-    }
-
-    return { count: commitCount, repos: Array.from(repos) };
-  } catch (error) {
-    console.error('获取 GitHub 数据失败:', error);
-    throw error;
-  }
-}
 
 interface Message {
   post_type: string;
@@ -714,7 +626,6 @@ const BOT_INFO = {
     '🎯 设置目标 [时长] - 每日目标',
     '🏆 排行榜 - 今日/周/总榜',
     '🎖️ 成就 - 查看成就',
-    '📚 /study-join - 加入MiniMind学习',
     '❓ 帮助 - 查看所有命令'
   ]
 };
@@ -2780,215 +2691,6 @@ function getNextReminderTime(): number {
   return diff;
 }
 
-// ==================== 学习督促定时器 ====================
-
-// 学习督促定时器
-async function getRecentCommits(count: number = 1): Promise<string[]> {
-  try {
-    // 使用 git log 获取最近的 commits
-    const { exec } = require('child_process');
-    const util = require('util');
-    const execAsync = util.promisify(exec);
-
-    const format = `--pretty=format:%H|%s|%b`;
-    const command = `git log -n ${count} ${format}`;
-
-    const { stdout } = await execAsync(command, {
-      cwd: process.cwd(),
-      encoding: 'utf8'
-    });
-
-    const commits = stdout.trim().split('\n').filter((line: string) => line);
-    return commits;
-  } catch (error) {
-    console.error('获取 git commits 失败:', error);
-    return [];
-  }
-}
-
-/**
- * 生成功能发布公告（AI 排版）
- */
-async function generateAnnouncement(commits: string[]): Promise<string> {
-  // 提取 commit 信息
-  const commitInfo = commits.map(commit => {
-    const [sha, subject, body] = commit.split('|');
-    return { sha, subject, body: body || '' };
-  });
-
-  // 如果只有一个 commit，使用单个 commit 的信息
-  const mainCommit = commitInfo[0];
-  const commitMsg = `${mainCommit.subject}\n\n${mainCommit.body}`.trim();
-
-  // 构建 AI prompt
-  const systemPrompt = `你是一个专业的产品发布公告撰写助手。你的任务是将 Git commit 信息转换成美观、易读的功能发布公告。
-
-要求：
-1. 使用 emoji 图标让公告更生动
-2. 将 commit 内容按功能模块分类
-3. 提取关键变更点
-4. 生成适合在 QQ 群发布的格式（使用纯文本，支持 emoji）
-5. 语言简洁明了，突出重点
-6. 不要编造 commit 中没有的内容
-7. 公告格式应该包含：
-   - 标题（功能概览）
-   - 主要功能列表（用 emoji 标记）
-   - 分隔线美化
-   - 结尾信息（发布时间、commit sha）
-
-输出格式示例：
-🎉 新功能上线：[功能标题]
-
-✨ 主要更新
-━━━━━━━━━━━━━━━━━━━━━━
-
-📚 [功能模块 1]
-  • 功能点 1
-  • 功能点 2
-
-🎨 [功能模块 2]
-  • 功能点 1
-
-━━━━━━━━━━━━━━━━━━━━━━
-
-📖 查看完整文档：COMMANDS.md
-
-发布时间：[日期]
-Commit：[sha 前7位]`;
-
-  // 调用 AI 生成公告
-  let announcement = '';
-  if (AI_API_KEY) {
-    try {
-      const aiResult = await callAI(
-        systemPrompt,
-        `请基于以下 Git commit 信息生成功能发布公告：\n\n${commitMsg}`
-      );
-
-      if (!aiResult) {
-        throw new Error('AI 返回为空');
-      }
-      announcement = aiResult;
-    } catch (error) {
-      console.error('AI 生成公告失败，使用备用方案:', error);
-      announcement = generateFallbackAnnouncement(commitInfo);
-    }
-  } else {
-    console.log('未配置 AI_API_KEY，使用备用方案');
-    announcement = generateFallbackAnnouncement(commitInfo);
-  }
-
-  return announcement;
-}
-
-/**
- * 备用公告生成方案（无 AI 时使用）
- */
-function generateFallbackAnnouncement(commits: Array<{ sha: string; subject: string; body: string }>): string {
-  const mainCommit = commits[0];
-
-  let announcement = `🎉 新功能上线：${mainCommit.subject.split(':')[1].trim()}\n\n`;
-  announcement += `✨ 主要更新\n`;
-  announcement += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
-
-  // 解析 commit body
-  const lines = mainCommit.body.split('\n').filter(line => line.trim());
-  const features: string[] = [];
-  const currentFeature: string[] = [];
-
-  lines.forEach((line: string) => {
-    if (line.startsWith('- ')) {
-      if (line.match(/^- [✨🎨📝🔧📚]? /)) {
-        // 功能分类行
-        if (currentFeature.length > 0) {
-          features.push(currentFeature.join('\n'));
-        }
-        const newFeature = [line];
-        features.push(newFeature.join('\n'));
-        currentFeature.length = 0;
-      } else {
-        currentFeature.push(line);
-      }
-    }
-  });
-
-  if (currentFeature.length > 0) {
-    features.push(currentFeature.join('\n'));
-  }
-
-  // 去重并添加
-  const uniqueFeatures = [...new Set(features)];
-  announcement += uniqueFeatures.join('\n\n');
-
-  announcement += `\n\n━━━━━━━━━━━━━━━━━━━━━━\n\n`;
-  announcement += `📖 查看完整文档：COMMANDS.md\n\n`;
-  announcement += `发布时间：${new Date().toLocaleDateString('zh-CN')}\n`;
-  announcement += `Commit：${mainCommit.sha.substring(0, 7)}`;
-
-  return announcement;
-}
-
-/**
- * 处理发布公告命令（管理员）
- */
-async function handleAnnounceCommand(
-  ws: WebSocket,
-  event: Message,
-  args: string[]
-): Promise<void> {
-  const userId = event.user_id?.toString() || '';
-  const isSuperAdmin = userId === SUPER_ADMIN_QQ;
-
-  if (!isSuperAdmin) {
-    sendReply(ws, event, '❌ 此命令仅超级管理员可用');
-    return;
-  }
-
-  let commitCount = 1;
-  if (args.length > 0 && !isNaN(parseInt(args[0]))) {
-    commitCount = parseInt(args[0]);
-  }
-
-  if (commitCount < 1 || commitCount > 10) {
-    sendReply(ws, event, '❌ commit 数量必须在 1-10 之间');
-    return;
-  }
-
-  try {
-    // 获取最近的 commits
-    const commits = await getRecentCommits(commitCount);
-
-    if (commits.length === 0) {
-      sendReply(ws, event, '❌ 未找到 commit 记录');
-      return;
-    }
-
-    sendReply(ws, event, `📝 正在生成公告，基于最近的 ${commits.length} 个 commit...\n\n请稍候...`);
-
-    // 生成公告
-    const announcement = await generateAnnouncement(commits);
-
-    // 发送公告到群组
-    if (!REMINDER_GROUP_ID) {
-      sendReply(ws, event, '❌ 督促群未配置（REMINDER_GROUP_ID）');
-      return;
-    }
-
-    sendGroupMessage(ws, REMINDER_GROUP_ID, announcement);
-
-    sendReply(ws, event, `✅ 公告已发送到群组\n\n` +
-      `📊 基于 ${commits.length} 个 commit 生成\n` +
-      `🎯 收到公告的用户：所有群成员`);
-
-  } catch (error) {
-    console.error('发布公告失败:', error);
-    sendReply(ws, event, '❌ 发布失败，请稍后重试\n\n' +
-      `错误信息：${error instanceof Error ? error.message : '未知错误'}`);
-  }
-}
-
-// ==================== 公告系统函数结束 ====================
-
 // 启动打卡督促定时器
 function startReminderTimer(ws: WebSocket): void {
   if (!SUPER_ADMIN_QQ || !REMINDER_GROUP_ID) {
@@ -3258,46 +2960,6 @@ function connectBot() {
           sendReply(ws, event, 'pong');
           break;
 
-        case 'github':
-        case 'GitHub':
-        case '代码':
-        case '提交':
-          if (!GITHUB_USERNAME) {
-            sendReply(ws, event, '未配置 GitHub 用户名（GITHUB_USERNAME）');
-            break;
-          }
-          try {
-            const { count, repos } = await getGitHubTodayCommits(GITHUB_USERNAME);
-            let response = '';
-
-            if (count === 0) {
-              const messages = [
-                `😅 今天还没有提交代码哦～\n快去写点什么吧！`,
-                `🤔 GitHub 今日提交: 0\n代码不会自己写的哦～`,
-                `📭 今天的 GitHub 还是空空的～\n该开始coding了！`
-              ];
-              response = messages[Math.floor(Math.random() * messages.length)];
-            } else if (count < 5) {
-              response = `👍 今日 GitHub 提交: ${count} 次\n` +
-                `📁 涉及仓库: ${repos.join(', ')}\n` +
-                `继续加油！`;
-            } else if (count < 10) {
-              response = `🔥 今日 GitHub 提交: ${count} 次\n` +
-                `📁 涉及仓库: ${repos.join(', ')}\n` +
-                `效率不错！`;
-            } else {
-              response = `🚀 今日 GitHub 提交: ${count} 次\n` +
-                `📁 涉及仓库: ${repos.join(', ')}\n` +
-                `太强了！代码狂魔！`;
-            }
-
-            sendReply(ws, event, response);
-          } catch (error) {
-            console.error('获取 GitHub 数据失败:', error);
-            sendReply(ws, event, '获取 GitHub 数据失败，请稍后重试');
-          }
-          break;
-
         case '测试模式':
         case 'test':
         case '测试':
@@ -3504,14 +3166,7 @@ function connectBot() {
             '🎖️ 成就 - 查看成就列表\n\n' +
             '🏆 今日排行/周榜/总榜 - 排行榜\n' +
             '📈 群统计 - 查看群整体数据\n\n' +
-            '💻 github/代码 - 查看GitHub提交\n' +
-            '💡 建议 [内容] - 提交功能建议\n\n' +
-            '📚 学习系统:\n' +
-            '/study-join - 加入MiniMind学习计划\n' +
-            '/study minimind status - 查看学习进度\n' +
-            '/study minimind checkin [内容] - 学习打卡\n' +
-            '/study minimind reminder on/off - 开关提醒\n' +
-            '/study minimind leave - 退出学习计划';
+            '💡 建议 [内容] - 提交功能建议';
 
           sendReply(ws, event, helpMsg);
           break;
