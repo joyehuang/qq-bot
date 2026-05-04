@@ -16,11 +16,12 @@
 │  3. check-admin-*   (tsc --noEmit)       │
 │  4. build-admin-server / admin-web 镜像  │
 │     → 推送到 ghcr.io                     │
-│  5. deploy: SSH 到服务器                 │
+│  5. deploy job 派发到 self-hosted runner │
 └──────────────────────────────────────────┘
-        ↓ ssh
+        ↓ runner（出站连 GitHub，无需开放入站端口）
 ┌──────────────────────────────────────────┐
 │  服务器 (与 Hermes Agent 同机)           │
+│  systemd: actions.runner.* 服务          │
 │                                          │
 │  scripts/deploy.sh                       │
 │   ├─ git fetch + reset --hard origin/main│
@@ -104,34 +105,45 @@ docker compose up -d napcat admin-api admin-web
 
 ---
 
-## 🔑 配置 GitHub Actions 自动部署
+## 🔑 配置 GitHub Actions 自动部署（Self-hosted Runner）
 
-### 步骤 1：在服务器上为 GHA 生成专用 SSH key
+部署用的是 GitHub Actions **self-hosted runner**，跑在本机以 systemd 服务存活。GitHub 推工作流时由本地 runner 主动接单，无需公网开放 SSH 端口、无需在 GitHub 配置 SSH 密钥。
+
+### 步骤 1：在 GitHub 注册 runner（首次部署或换机器时）
+
+1. 打开 https://github.com/joyehuang/qq-bot/settings/actions/runners/new ，OS 选 Linux，Arch 选 x64
+2. 复制页面给出的 `--token AXXX...` 那一段
+3. 在服务器执行：
 
 ```bash
-ssh-keygen -t ed25519 -C "github-actions-qq-bot" -f ~/.ssh/qqbot_gha -N ""
-cat ~/.ssh/qqbot_gha.pub >> ~/.ssh/authorized_keys
-chmod 600 ~/.ssh/authorized_keys
-cat ~/.ssh/qqbot_gha    # 复制这个**私钥**全部内容
+mkdir -p ~/actions-runner/qqbot && cd ~/actions-runner/qqbot
+curl -fsSLo runner.tar.gz \
+  "https://github.com/actions/runner/releases/latest/download/actions-runner-linux-x64.tar.gz"
+tar xzf runner.tar.gz
+./config.sh --url https://github.com/joyehuang/qq-bot \
+  --token <PASTE_TOKEN_HERE> \
+  --unattended --name qqbot-runner --labels qqbot --replace
+sudo ./svc.sh install ubuntu
+sudo ./svc.sh start
 ```
 
-### 步骤 2：在 GitHub 仓库设置 Secrets
+> 当前 runner 已装在 `/home/ubuntu/actions-runner/qqbot/`，由 systemd 服务 `actions.runner.joyehuang-qq-bot.qqbot-runner.service` 管理。
 
-打开 https://github.com/joyehuang/qq-bot/settings/secrets/actions 添加：
+### 步骤 2：（一次性）GitHub 安全设置
 
-| Secret 名 | 值 |
-|----------|-----|
-| `SERVER_HOST` | 你服务器的固定公网 IP 或域名 |
-| `SERVER_USER` | `ubuntu`（或其他能访问 `/mnt/hermes-data/...` 的用户） |
-| `SERVER_SSH_KEY` | 上一步复制的**私钥**全部内容（包括 `-----BEGIN/END-----` 行） |
+> Public repo 跑 self-hosted runner 必须做这一步，避免 fork PR 在你服务器上跑陌生人代码：
 
-> 旧 secrets `EC2_HOST` / `EC2_USER` / `EC2_SSH_KEY` 不再使用，可以删掉。
+打开 https://github.com/joyehuang/qq-bot/settings/actions ，在 "Fork pull request workflows from outside collaborators" 选 **"Require approval for all outside collaborators"**。
 
-### 步骤 3：测试自动部署
+### 步骤 3：清理（如有）旧的 SSH 部署 secrets
+
+旧 secrets `EC2_HOST` / `EC2_USER` / `EC2_SSH_KEY` / `SERVER_HOST` / `SERVER_USER` / `SERVER_SSH_KEY` 都不再使用，去 https://github.com/joyehuang/qq-bot/settings/secrets/actions 删除。
+
+### 步骤 4：测试自动部署
 
 ```bash
 # 本地随便改个文件，push 一下
-git commit --allow-empty -m "test: 触发首次自动部署"
+git commit --allow-empty -m "test: 触发自动部署"
 git push origin main
 ```
 
@@ -151,7 +163,7 @@ git push
 
 GHA 自动：
 1. ✅ 类型检查
-2. ✅ SSH 到服务器：`git pull` → `npm ci`（仅 lockfile 变化时）→ `prisma generate/migrate deploy` → `pm2 reload qq-bot`
+2. ✅ self-hosted runner 直接执行 `scripts/deploy.sh`：`git pull` → `npm ci`（仅 lockfile 变化时）→ `prisma generate/migrate deploy` → `pm2 reload qq-bot`
 3. ⏭️ 不构建任何 Docker 镜像
 
 ### 改 Admin Server / Admin Web
@@ -162,7 +174,7 @@ git commit -am "..."
 git push
 ```
 
-GHA 自动构建 GHCR 镜像 → SSH 到服务器 → `docker compose pull admin-api && docker compose up -d`。
+GHA 自动构建 GHCR 镜像 → self-hosted runner 执行 `docker compose pull admin-api && docker compose up -d`。
 
 ### 改 Prisma schema
 
@@ -211,11 +223,24 @@ pm2 logs qq-bot --err --lines 100
 - TypeScript 编译错误 → 本地 `npx tsc --noEmit` 复现
 - 数据库连接失败 → 检查 `prisma/dev.db` 是否存在 + `.env` 里 `DATABASE_URL`
 
-### GHA `deploy` 步骤超时 / SSH 失败
+### GHA `deploy` 步骤一直 queued / runner offline
 
-- 检查服务器 IP 是否变了（`SERVER_HOST` 需要更新）
-- 服务器 22 端口是否对外开放
-- `~/.ssh/authorized_keys` 是否还包含 `~/.ssh/qqbot_gha.pub` 的内容
+```bash
+# 在服务器上检查 runner 服务状态
+sudo systemctl status actions.runner.joyehuang-qq-bot.qqbot-runner.service
+
+# 看实时日志
+sudo journalctl -u actions.runner.joyehuang-qq-bot.qqbot-runner.service -f
+```
+
+GitHub 这边可在 https://github.com/joyehuang/qq-bot/settings/actions/runners 查看 runner 是否 Idle。如果 Offline：
+
+```bash
+cd ~/actions-runner/qqbot
+sudo ./svc.sh start
+```
+
+如果 token 失效或 runner 损坏，重新注册见上面"步骤 1：在 GitHub 注册 runner"。
 
 ### Admin 镜像拉取失败 `denied`
 

@@ -231,7 +231,8 @@ jobs:
       (needs.check-bot.result == 'success' || needs.check-bot.result == 'skipped') &&
       (needs.build-admin-server.result == 'success' || needs.build-admin-server.result == 'skipped') &&
       (needs.build-admin-web.result == 'success' || needs.build-admin-web.result == 'skipped')
-    runs-on: ubuntu-latest
+    # self-hosted runner 直接在服务器上执行，无需 SSH。
+    runs-on: [self-hosted, qqbot]
     steps:
       - name: 📋 显示提交信息
         run: |
@@ -242,20 +243,15 @@ jobs:
           echo "  - Admin Server: ${{ needs.detect-changes.outputs.admin-server }}"
           echo "  - Admin Web: ${{ needs.detect-changes.outputs.admin-web }}"
 
-      - name: 🚀 SSH 到服务器执行部署
-        uses: appleboy/ssh-action@v1.0.0
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          envs: UPDATE_BOT,UPDATE_ADMIN_SERVER,UPDATE_ADMIN_WEB,GITHUB_REPOSITORY_OWNER
-          script: |
-            export UPDATE_BOT="${{ needs.detect-changes.outputs.bot }}"
-            export UPDATE_ADMIN_SERVER="${{ needs.detect-changes.outputs.admin-server }}"
-            export UPDATE_ADMIN_WEB="${{ needs.detect-changes.outputs.admin-web }}"
-            export GITHUB_REPOSITORY_OWNER="${{ github.repository_owner }}"
-            cd /mnt/hermes-data/community/projects/qq-bot
-            bash scripts/deploy.sh
+      - name: 🚀 执行部署脚本
+        env:
+          UPDATE_BOT: ${{ needs.detect-changes.outputs.bot }}
+          UPDATE_ADMIN_SERVER: ${{ needs.detect-changes.outputs.admin-server }}
+          UPDATE_ADMIN_WEB: ${{ needs.detect-changes.outputs.admin-web }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          cd /mnt/hermes-data/community/projects/qq-bot
+          bash scripts/deploy.sh
 
       - name: ✅ 部署完成
         run: echo "🎉 部署完成"
