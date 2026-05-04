@@ -63,7 +63,7 @@ const WS_URL = process.env.WS_URL || 'ws://localhost:6100';
 const prisma = new PrismaClient();
 
 // 版本信息
-const VERSION = 'v1.2.0';
+const VERSION = 'v1.3.0';
 const VERSION_FEATURES = [
   '打卡记录与贷款打卡',
   '排行榜（今日/本周/总榜）',
