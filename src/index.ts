@@ -2775,6 +2775,7 @@ function startReminderTimer(ws: WebSocket): void {
 }
 
 function connectBot() {
+  console.log(`QQ Bot ${VERSION} 启动中...`);
   console.log('正在连接 NapCat...');
 
   const ws = new WebSocket(WS_URL);
