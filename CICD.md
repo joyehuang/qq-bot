@@ -1,316 +1,247 @@
-# CI/CD 智能部署系统说明
+# CI/CD 与部署说明
 
-## 🎯 概述
+> 本项目部署在与 Hermes Agent 同一台服务器上。Bot 主程序通过 PM2 直接在宿主机运行（便于无成本调用 `hermes` CLI），管理后台仍以 Docker 容器形式运行。
 
-本项目使用智能 CI/CD 系统，基于文件变更自动检测、构建和部署，节省资源和时间。
+---
 
-## 🏗️ 架构设计
-
-### 工作流程
+## 🏗️ 架构概览
 
 ```
-Push 到 main 分支
-    ↓
-检测文件变更 (detect-changes)
-    ├─ Bot 代码变更?
-    ├─ Admin Server 变更?
-    └─ Admin Web 变更?
-    ↓
-条件执行类型检查
-    ├─ check-bot (如果 bot 变更)
-    ├─ check-admin-server (如果 admin-server 变更)
-    └─ check-admin-web (如果 admin-web 变更)
-    ↓
-条件构建镜像 (只构建变更的模块)
-    ├─ build-bot → ghcr.io/joyehuang/qq-bot:latest
-    ├─ build-admin-server → ghcr.io/joyehuang/qq-bot-admin-server:latest
-    └─ build-admin-web → ghcr.io/joyehuang/qq-bot-admin-web:latest
-    ↓
-智能部署到服务器
-    └─ 只拉取和重启变更的服务
+本地 push → main
+        ↓
+┌──────────────────────────────────────────┐
+│  GitHub Actions                          │
+│  1. detect-changes  (paths-filter)       │
+│  2. check-bot       (tsc --noEmit)       │
+│  3. check-admin-*   (tsc --noEmit)       │
+│  4. build-admin-server / admin-web 镜像  │
+│     → 推送到 ghcr.io                     │
+│  5. deploy: SSH 到服务器                 │
+└──────────────────────────────────────────┘
+        ↓ ssh
+┌──────────────────────────────────────────┐
+│  服务器 (与 Hermes Agent 同机)           │
+│                                          │
+│  scripts/deploy.sh                       │
+│   ├─ git fetch + reset --hard origin/main│
+│   ├─ Bot   → npm ci (按需) + prisma     │
+│   │         migrate deploy + pm2 reload │
+│   └─ Admin → docker compose pull + up   │
+│                                          │
+│  ─ 宿主机                                │
+│    └─ PM2: qq-bot  ──→  hermes CLI      │
+│  ─ Docker                                │
+│    ├─ napcat                             │
+│    ├─ admin-api  (8080→3001)             │
+│    └─ admin-web  (8080)                  │
+└──────────────────────────────────────────┘
 ```
 
-## 📦 变更检测规则
+**为什么 Bot 不在 Docker 里？**  
+Bot 需要调用宿主机的 `hermes` 命令（实际是 Python venv shim，依赖 `~/.hermes/` 配置）。直接在宿主机用 PM2 运行能避免 mount Python 解释器/venv 等脆弱配置，hermes 升级也能立刻生效。隔离性主要由 `community` profile 的 cwd 限制和 toolset 裁剪保证，跟容器化无关。
 
-### Bot 主程序
-触发条件：以下任一文件变更
-- `src/**` - Bot 源代码
-- `prisma/**` - 数据库 schema
-- `package*.json` - 依赖配置
-- `Dockerfile` - Bot 镜像配置
-- `tsconfig.json` - TypeScript 配置
+---
 
-### Admin Server
-触发条件：以下任一文件变更
-- `admin/server/**` - Admin Server 源代码
-- `prisma/**` - 数据库 schema（共享）
+## 🚀 首次部署（人工步骤）
 
-### Admin Web
-触发条件：以下任一文件变更
-- `admin/web/**` - Admin Web 源代码
+> 以下步骤需要你在服务器上执行一次。完成后 GHA 才能自动部署。
 
-## 🚀 优势对比
-
-### 旧方案（服务器构建）
-```
-每次部署：
-  - GitHub Actions: 类型检查 (~2分钟)
-  - 服务器: 构建 3 个镜像 (~10分钟)
-  - 资源消耗: 服务器 CPU 100%，RAM 1GB+
-  - 网络消耗: 下载依赖
-```
-
-### 新方案（智能检测 + GitHub 构建）
-```
-只改 bot 代码：
-  - GitHub Actions: 检测 + 检查 + 构建 bot (~3分钟)
-  - 服务器: 拉取 bot 镜像 (~30秒)
-  - 资源消耗: 服务器几乎无消耗
-  - 网络消耗: 拉取 ~50MB 镜像
-
-只改文档：
-  - GitHub Actions: 检测变更，跳过所有构建
-  - 服务器: 无操作
-  - 资源消耗: 零
-```
-
-**预期节省：**
-- 构建时间: 减少 60%+
-- 服务器资源: 减少 90%+
-- 网络带宽: 减少 70%+
-
-## 🔧 首次部署设置
-
-### 1. 创建 GitHub Personal Access Token (PAT)
-
-1. 访问 https://github.com/settings/tokens
-2. 点击 "Generate new token (classic)"
-3. 名称：`GHCR Read Access for QQ Bot`
-4. 权限：勾选 `read:packages`
-5. 生成并复制 token（格式: `ghp_xxxx`）
-
-### 2. 服务器配置
+### 步骤 1：安装 PM2（系统级）
 
 ```bash
-# SSH 到服务器
-ssh ubuntu@your-server
+sudo npm install -g pm2
+pm2 -v   # 确认安装成功
+```
 
-# 进入项目目录
-cd /home/ubuntu/qq-bot
+### 步骤 2：拉取代码到目标位置
 
-# 创建 .env 文件
+```bash
+# 本项目已经在 /mnt/hermes-data/community/projects/qq-bot/，跳过即可
+# 如果是新机器：
+cd /mnt/hermes-data/community/projects/
+git clone git@github.com:joyehuang/qq-bot.git
+cd qq-bot
+```
+
+### 步骤 3：准备 `.env`
+
+```bash
 cp .env.example .env
 nano .env
 ```
 
-填入以下必需的环境变量：
-```bash
-GHCR_TOKEN=ghp_your_token_here
-GITHUB_REPOSITORY_OWNER=joyehuang
-```
+至少需要填：
+- `DATABASE_URL="file:./dev.db"`（已默认）
+- `ADMIN_USERNAME` / `ADMIN_PASSWORD` / `JWT_SECRET`（管理后台）
+- `GHCR_TOKEN` / `GITHUB_REPOSITORY_OWNER`（拉取 admin 镜像，私有仓库需要）
 
-### 3. 首次手动拉取镜像
-
-**方法1：使用部署脚本（推荐）**
-```bash
-# 设置环境变量
-export UPDATE_BOT=true
-export UPDATE_ADMIN_SERVER=true
-export UPDATE_ADMIN_WEB=true
-export GITHUB_REPOSITORY_OWNER=joyehuang
-
-# 执行部署脚本
-./deploy-qqbot.sh
-```
-
-**方法2：手动拉取**
-```bash
-# 加载环境变量
-source .env
-
-# 登录 GHCR
-echo $GHCR_TOKEN | docker login ghcr.io -u joyehuang --password-stdin
-
-# 拉取镜像
-export GITHUB_REPOSITORY_OWNER=joyehuang
-docker compose pull
-
-# 启动服务
-docker compose up -d
-```
-
-### 4. 验证部署
+### 步骤 4：装依赖 & 初始化数据库
 
 ```bash
-# 查看容器状态
-docker compose ps
-
-# 查看日志
-docker compose logs -f bot
-docker compose logs -f admin-api
-docker compose logs -f admin-web
+npm ci
+npx prisma@6.19.0 generate
+npx prisma@6.19.0 migrate deploy
 ```
+
+### 步骤 5：首次启动 Bot（PM2）
+
+```bash
+pm2 start ecosystem.config.js
+pm2 logs qq-bot --lines 50    # 确认启动正常
+pm2 save                      # 保存当前进程列表
+pm2 startup                   # 输出一行 sudo 命令，按提示执行
+```
+
+`pm2 startup` 那行 sudo 命令执行后，机器重启时 PM2 会自动恢复 qq-bot 进程。
+
+### 步骤 6：启动管理后台（Docker）
+
+```bash
+docker login ghcr.io -u <你的 GitHub 用户名>   # 私有镜像才需要
+docker compose pull admin-api admin-web
+docker compose up -d napcat admin-api admin-web
+```
+
+---
+
+## 🔑 配置 GitHub Actions 自动部署
+
+### 步骤 1：在服务器上为 GHA 生成专用 SSH key
+
+```bash
+ssh-keygen -t ed25519 -C "github-actions-qq-bot" -f ~/.ssh/qqbot_gha -N ""
+cat ~/.ssh/qqbot_gha.pub >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+cat ~/.ssh/qqbot_gha    # 复制这个**私钥**全部内容
+```
+
+### 步骤 2：在 GitHub 仓库设置 Secrets
+
+打开 https://github.com/joyehuang/qq-bot/settings/secrets/actions 添加：
+
+| Secret 名 | 值 |
+|----------|-----|
+| `SERVER_HOST` | 你服务器的固定公网 IP 或域名 |
+| `SERVER_USER` | `ubuntu`（或其他能访问 `/mnt/hermes-data/...` 的用户） |
+| `SERVER_SSH_KEY` | 上一步复制的**私钥**全部内容（包括 `-----BEGIN/END-----` 行） |
+
+> 旧 secrets `EC2_HOST` / `EC2_USER` / `EC2_SSH_KEY` 不再使用，可以删掉。
+
+### 步骤 3：测试自动部署
+
+```bash
+# 本地随便改个文件，push 一下
+git commit --allow-empty -m "test: 触发首次自动部署"
+git push origin main
+```
+
+打开 https://github.com/joyehuang/qq-bot/actions 看 workflow 是否走完。
+
+---
 
 ## 📝 日常使用
 
-### 场景1：修改 Bot 代码
+### 改 Bot 代码 → push → 自动 PM2 reload
 
 ```bash
-# 本地修改代码
 vim src/index.ts
-
-# 提交并推送
-git add src/index.ts
-git commit -m "feat(bot): 新增某功能"
+git commit -am "feat: ..."
 git push
 ```
 
-**自动执行：**
-1. ✅ 检测到 `src/**` 变更
-2. ✅ 类型检查 Bot
-3. ✅ 构建 Bot 镜像
-4. ✅ 推送到 GHCR
-5. ✅ 服务器拉取并重启 bot
-6. ⏭️ 跳过 admin-server 和 admin-web
+GHA 自动：
+1. ✅ 类型检查
+2. ✅ SSH 到服务器：`git pull` → `npm ci`（仅 lockfile 变化时）→ `prisma generate/migrate deploy` → `pm2 reload qq-bot`
+3. ⏭️ 不构建任何 Docker 镜像
 
-### 场景2：修改 Admin Web
+### 改 Admin Server / Admin Web
 
 ```bash
-# 本地修改代码
-vim admin/web/src/views/Dashboard.vue
-
-# 提交并推送
-git add admin/web/
-git commit -m "feat(admin): 优化仪表盘"
+vim admin/server/src/...
+git commit -am "..."
 git push
 ```
 
-**自动执行：**
-1. ✅ 检测到 `admin/web/**` 变更
-2. ✅ 类型检查 Admin Web
-3. ✅ 构建 Admin Web 镜像
-4. ✅ 服务器拉取并重启 admin-web
-5. ⏭️ 跳过 bot 和 admin-server
+GHA 自动构建 GHCR 镜像 → SSH 到服务器 → `docker compose pull admin-api && docker compose up -d`。
 
-### 场景3：修改 Prisma Schema
+### 改 Prisma schema
 
-```bash
-# 修改数据库 schema
-vim prisma/schema.prisma
+`prisma/**` 同时触发 bot 和 admin-server 的更新流程，迁移会被 `prisma migrate deploy` 自动应用。
 
-# 提交并推送
-git add prisma/
-git commit -m "feat(db): 新增某字段"
-git push
-```
+### 只改文档（README/CICD.md 等）
 
-**自动执行：**
-1. ✅ 检测到 `prisma/**` 变更
-2. ✅ 类型检查 Bot + Admin Server
-3. ✅ 构建 Bot + Admin Server 镜像
-4. ✅ 执行数据库迁移
-5. ✅ 服务器重启 bot + admin-api
-6. ⏭️ 跳过 admin-web（前端不依赖 Prisma）
+不会触发任何构建或部署 — 节省时间。
 
-### 场景4：只修改文档
+---
+
+## 🔧 运维常用命令
 
 ```bash
-# 修改文档
-vim README.md
+# Bot
+pm2 status                  # 进程列表
+pm2 logs qq-bot             # 实时日志
+pm2 logs qq-bot --lines 200 # 最近 200 行
+pm2 reload qq-bot           # 滚动重启（无停机）
+pm2 restart qq-bot          # 强制重启
+pm2 monit                   # 实时监控
 
-# 提交并推送
-git add README.md
-git commit -m "docs: 更新文档"
-git push
-```
-
-**自动执行：**
-1. ✅ 检测到无代码变更
-2. ⏭️ 跳过所有构建和部署
-3. 🎉 节省时间和资源
-
-## 🔍 故障排查
-
-### 问题1：服务器拉取镜像失败
-
-```bash
-Error: pull access denied for ghcr.io/joyehuang/qq-bot
-```
-
-**解决：**
-```bash
-# 检查 .env 文件
-cat .env | grep GHCR_TOKEN
-
-# 重新登录
-echo $GHCR_TOKEN | docker login ghcr.io -u joyehuang --password-stdin
-
-# 手动拉取测试
-docker pull ghcr.io/joyehuang/qq-bot:latest
-```
-
-### 问题2：GitHub Actions 构建失败
-
-**常见原因：**
-- TypeScript 类型错误
-- Dockerfile 配置错误
-- 依赖安装失败
-
-**解决：**
-1. 查看 GitHub Actions 日志
-2. 本地运行类型检查：`npx tsc --noEmit`
-3. 本地构建镜像：`docker build -t test .`
-
-### 问题3：部署脚本报错
-
-```bash
-⚠️ bot 镜像拉取失败，使用现有镜像
-```
-
-**这是正常的！** 如果拉取失败，脚本会使用现有镜像继续运行，不会中断服务。
-
-### 问题4：镜像是旧版本
-
-```bash
-# 手动清除缓存并拉取
-docker compose down
-docker system prune -a -f
-docker compose pull
-docker compose up -d
-```
-
-## 📊 监控和日志
-
-### 查看 GitHub Actions 运行状态
-https://github.com/joyehuang/qq-bot/actions
-
-### 查看镜像列表
-https://github.com/joyehuang?tab=packages
-
-### 服务器端日志
-```bash
-# 实时日志
-docker compose logs -f
-
-# 特定服务
-docker compose logs -f bot
+# 管理后台
+docker compose ps
 docker compose logs -f admin-api
+docker compose logs -f admin-web
+docker compose restart admin-api
 
-# 最近 100 行
-docker compose logs --tail 100
+# 手动触发完整部署（不依赖 GHA）
+cd /mnt/hermes-data/community/projects/qq-bot
+UPDATE_BOT=true UPDATE_ADMIN_SERVER=true UPDATE_ADMIN_WEB=true bash scripts/deploy.sh
 ```
 
-## 🎓 最佳实践
+---
 
-1. **频繁提交** - 小步快跑，每个功能单独提交
-2. **清晰的提交信息** - 使用 Conventional Commits 规范
-3. **本地测试** - 推送前先本地运行类型检查
-4. **查看 Actions** - 每次 push 后检查 Actions 是否成功
-5. **定期清理** - 服务器定期清理旧镜像释放空间
+## 🩺 故障排查
+
+### Bot 进程状态显示 errored
+
+```bash
+pm2 logs qq-bot --err --lines 100
+```
+
+常见原因：
+- `hermes` 不在 PATH → 检查 `ecosystem.config.js` 里 `env.PATH` 是否包含 `~/.local/bin`
+- TypeScript 编译错误 → 本地 `npx tsc --noEmit` 复现
+- 数据库连接失败 → 检查 `prisma/dev.db` 是否存在 + `.env` 里 `DATABASE_URL`
+
+### GHA `deploy` 步骤超时 / SSH 失败
+
+- 检查服务器 IP 是否变了（`SERVER_HOST` 需要更新）
+- 服务器 22 端口是否对外开放
+- `~/.ssh/authorized_keys` 是否还包含 `~/.ssh/qqbot_gha.pub` 的内容
+
+### Admin 镜像拉取失败 `denied`
+
+```bash
+# 私有仓库镜像，需要 PAT 登录
+echo $GHCR_TOKEN | docker login ghcr.io -u $GITHUB_REPOSITORY_OWNER --password-stdin
+```
+
+`GHCR_TOKEN` 是 GitHub PAT（classic），权限勾 `read:packages`。
+
+### `pm2 reload` 后行为没变化
+
+- 检查代码确实 pull 下来了：`git log -1 --oneline`
+- ts-node 没 cache，但有时第三方库的 require cache 残留 → 改用 `pm2 restart qq-bot`
+
+---
+
+## 📊 监控
+
+- GHA 运行状态：https://github.com/joyehuang/qq-bot/actions
+- GHCR 镜像：https://github.com/joyehuang?tab=packages
+
+---
 
 ## 📖 相关文档
 
-- GitHub Actions: https://docs.github.com/en/actions
-- GitHub Packages: https://docs.github.com/en/packages
-- Docker Compose: https://docs.docker.com/compose/
-- Prisma: https://www.prisma.io/docs/
+- 项目 PRD：[`PRD_QQBot_Hermes_Integration.md`](./PRD_QQBot_Hermes_Integration.md)
+- PM2 文档：https://pm2.keymetrics.io/docs/usage/quick-start/
+- Prisma migrate deploy：https://www.prisma.io/docs/concepts/components/prisma-migrate/migrate-deployments

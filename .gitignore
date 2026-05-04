@@ -17,5 +17,8 @@ build/
 # Backups
 *.backup
 
+# PM2 logs
+logs/
+
 # Claude
 .claude

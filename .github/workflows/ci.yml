@@ -35,8 +35,8 @@ jobs:
               - 'src/**'
               - 'prisma/**'
               - 'package*.json'
-              - 'Dockerfile'
               - 'tsconfig.json'
+              - 'ecosystem.config.js'
             admin-server:
               - 'admin/server/**'
               - 'prisma/**'
@@ -124,48 +124,10 @@ jobs:
         working-directory: admin/web
         run: npx vue-tsc --noEmit
 
-  # 构建并推送 Bot 镜像
-  build-bot:
-    name: 构建镜像 - Bot
-    needs: [detect-changes, check-bot]
-    if: |
-      always() &&
-      needs.detect-changes.outputs.bot == 'true' &&
-      (needs.check-bot.result == 'success' || needs.check-bot.result == 'skipped')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: 📦 检出代码
-        uses: actions/checkout@v4
-
-      - name: 🔐 登录到 GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: 📝 提取镜像元数据
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_PREFIX }}/qq-bot
-          tags: |
-            type=sha,prefix={{branch}}-,enable=${{ startsWith(github.ref, 'refs/heads/') }}
-            type=sha,prefix=sha-,enable=${{ !startsWith(github.ref, 'refs/heads/') }}
-            type=ref,event=tag
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: 🔨 构建并推送镜像
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+  # ========================================================================
+  # Bot 主程序不再构建 Docker 镜像。Bot 直接在宿主机以 ts-node + PM2 运行，
+  # 部署阶段通过 git pull + pm2 reload 完成更新。
+  # ========================================================================
 
   # 构建并推送 Admin Server 镜像
   build-admin-server:
@@ -253,10 +215,10 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-  # 部署到 EC2
+  # 部署到服务器（与 Hermes Agent 同机部署）
   deploy:
-    name: 部署到 EC2
-    needs: [detect-changes, build-bot, build-admin-server, build-admin-web]
+    name: 部署到服务器
+    needs: [detect-changes, check-bot, build-admin-server, build-admin-web]
     if: |
       always() &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
@@ -265,37 +227,35 @@ jobs:
         needs.detect-changes.outputs.bot == 'true' ||
         needs.detect-changes.outputs.admin-server == 'true' ||
         needs.detect-changes.outputs.admin-web == 'true'
-      )
+      ) &&
+      (needs.check-bot.result == 'success' || needs.check-bot.result == 'skipped') &&
+      (needs.build-admin-server.result == 'success' || needs.build-admin-server.result == 'skipped') &&
+      (needs.build-admin-web.result == 'success' || needs.build-admin-web.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
-      - name: 📦 检出代码
-        uses: actions/checkout@v4
-
       - name: 📋 显示提交信息
         run: |
           echo "部署提交: ${{ github.sha }}"
           echo "提交者: ${{ github.actor }}"
-          echo "提交信息: ${{ github.event.head_commit.message }}"
           echo "更新的服务:"
           echo "  - Bot: ${{ needs.detect-changes.outputs.bot }}"
           echo "  - Admin Server: ${{ needs.detect-changes.outputs.admin-server }}"
           echo "  - Admin Web: ${{ needs.detect-changes.outputs.admin-web }}"
 
-      - name: 🚀 部署到 EC2
+      - name: 🚀 SSH 到服务器执行部署
         uses: appleboy/ssh-action@v1.0.0
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
           envs: UPDATE_BOT,UPDATE_ADMIN_SERVER,UPDATE_ADMIN_WEB,GITHUB_REPOSITORY_OWNER
           script: |
             export UPDATE_BOT="${{ needs.detect-changes.outputs.bot }}"
             export UPDATE_ADMIN_SERVER="${{ needs.detect-changes.outputs.admin-server }}"
             export UPDATE_ADMIN_WEB="${{ needs.detect-changes.outputs.admin-web }}"
             export GITHUB_REPOSITORY_OWNER="${{ github.repository_owner }}"
-            /home/ubuntu/deploy-qqbot.sh
+            cd /mnt/hermes-data/community/projects/qq-bot
+            bash scripts/deploy.sh
 
       - name: ✅ 部署完成
-        run: |
-          echo "🎉 QQ Bot 已成功部署到服务器！"
-          echo "查看日志: docker compose logs -f"
+        run: echo "🎉 部署完成"

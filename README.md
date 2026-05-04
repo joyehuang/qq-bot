@@ -139,14 +139,6 @@ REMINDER_TIMEZONE="Asia/Shanghai"
 STREAK_WARNING_HOUR="21"
 STREAK_TAUNT_HOUR="9"
 
-# GitHub 配置（可选）
-GITHUB_USERNAME="你的GitHub用户名"
-GITHUB_TOKEN="ghp_xxxx"
-
-# AI 配置（可选，用于个性化分析）
-AI_API_KEY="your-siliconflow-api-key"
-AI_MODEL="Qwen/Qwen2.5-7B-Instruct"
-
 # 群头衔配置（可选）
 TITLE_GROUP_ID="群号"
 DEBT_THRESHOLD="300"
@@ -166,9 +158,20 @@ npx prisma migrate dev
 
 4. **启动机器人**
 
+开发模式：
+
 ```bash
 npx ts-node src/index.ts
 ```
+
+生产部署（PM2，详见 [`CICD.md`](./CICD.md)）：
+
+```bash
+pm2 start ecosystem.config.js
+pm2 save
+```
+
+> AI 调用通过本地 [Hermes Agent](https://github.com/...) CLI 完成（`hermes -p community chat ...`），无需配置远程 API key。
 
 ---
 
@@ -341,10 +344,12 @@ qq-bot/
 │   └── migrations/       # 数据库迁移
 ├── napcat/
 │   └── config/           # NapCat 配置
-├── docker-compose.yml    # Docker 配置
-├── deploy-qqbot.sh       # Bot 部署脚本
-├── deploy-admin.sh       # 管理后台部署脚本
+├── docker-compose.yml    # napcat / admin-api / admin-web（Bot 不再容器化）
+├── ecosystem.config.js   # PM2 配置（Bot 主程序）
+├── scripts/
+│   └── deploy.sh         # 统一部署脚本（GHA 通过 SSH 调用）
 ├── COMMANDS.md           # 完整指令文档
+├── CICD.md               # CI/CD 与部署说明
 ├── CLAUDE.md             # 开发规范
 └── README.md             # 项目说明
 ```
