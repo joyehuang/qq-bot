@@ -1,7 +1,11 @@
 import "dotenv/config";
 import WebSocket from 'ws';
 import { PrismaClient, Checkin, Suggestion, Achievement } from '@prisma/client';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { getAIStyle } from './config/aiStyles';
+
+const execFileAsync = promisify(execFile);
 
 // 成就定义
 const ACHIEVEMENTS: Record<string, { name: string; description: string; icon: string }> = {
@@ -73,30 +77,90 @@ const VERSION_FEATURES = [
   '撤销打卡功能'
 ];
 
+interface HermesAgentOptions {
+  systemPrompt: string;
+  userPrompt: string;
+  model?: string;
+  profile?: string;
+  timeoutMs?: number;
+}
+
+interface HermesAgentResult {
+  success: boolean;
+  content: string | null;
+  error?: string;
+  sessionId?: string;
+}
+
+async function callHermesAgentV2(options: HermesAgentOptions): Promise<HermesAgentResult> {
+  const {
+    systemPrompt,
+    userPrompt,
+    model,
+    profile = 'community',
+    timeoutMs = 30000,
+  } = options;
+  const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
+
+  // -p/--profile is a top-level flag in hermes_cli; it must precede the `chat` subcommand.
+  const args: string[] = ['-p', profile, 'chat', '-q', fullPrompt, '-Q'];
+  if (model) {
+    args.push('-m', model);
+  }
+
+  try {
+    const { stdout, stderr } = await execFileAsync('hermes', args, {
+      timeout: timeoutMs,
+      maxBuffer: 1024 * 1024,
+    });
+
+    // In quiet mode, hermes CLI writes `session_id: ...` to stderr and the
+    // response body to stdout. Extract sessionId from stderr (if present) and
+    // suppress that line so it's not logged as a warning.
+    let sessionId: string | undefined;
+    if (stderr && stderr.trim()) {
+      const stderrLines = stderr.split('\n');
+      const remaining: string[] = [];
+      for (const line of stderrLines) {
+        if (line.startsWith('session_id:')) {
+          sessionId = line.slice('session_id:'.length).trim();
+        } else if (line.trim()) {
+          remaining.push(line);
+        }
+      }
+      if (remaining.length > 0) {
+        console.warn('[HermesAgent] stderr:', remaining.join('\n'));
+      }
+    }
+
+    const content = stdout.trim();
+    return { success: true, content: content || null, sessionId };
+  } catch (error: any) {
+    let errorMsg = '未知错误';
+    if (error?.killed && (error.signal === 'SIGTERM' || error.code === 'ETIMEDOUT')) {
+      errorMsg = `Hermes Agent 调用超时（${timeoutMs}ms）`;
+    } else if (error?.code === 'ENOENT') {
+      errorMsg = 'hermes 命令未找到，请检查 Hermes Agent 是否已安装并在 PATH 中';
+    } else if (error?.stderr) {
+      errorMsg = `Hermes Agent 错误: ${String(error.stderr).trim()}`;
+    } else if (error?.message) {
+      errorMsg = error.message;
+    }
+    return { success: false, content: null, error: errorMsg };
+  }
+}
+
 async function callHermesAgent(
   systemPrompt: string,
   userPrompt: string,
   model?: string
 ): Promise<string | null> {
-  const { execSync } = require('child_process');
-  const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
-
-  try {
-    const modelFlag = model ? `-m ${model}` : '';
-    const result = execSync(
-      `hermes chat -q ${JSON.stringify(fullPrompt)} -Q ${modelFlag}`,
-      { encoding: 'utf-8', timeout: 30000, maxBuffer: 1024 * 1024 }
-    );
-    // Parse output: first line is 'session_id: xxx', rest is the response
-    const lines = result.trim().split('\n');
-    if (lines.length > 1 && lines[0].startsWith('session_id:')) {
-      return lines.slice(1).join('\n').trim();
-    }
-    return result.trim();
-  } catch (error) {
-    console.error('Hermes Agent 调用失败:', error);
+  const result = await callHermesAgentV2({ systemPrompt, userPrompt, model });
+  if (!result.success) {
+    console.error('[HermesAgent] 调用失败:', result.error);
     return null;
   }
+  return result.content;
 }
 
 // AI 调用函数
