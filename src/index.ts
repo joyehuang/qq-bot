@@ -471,31 +471,43 @@ async function handleClassificationCorrection(
   return true;
 }
 
-// 生成 AI 鼓励语
+// 生成 AI 鼓励语（打卡完成后的结语）
+// 上下文：本次打卡信息 + 用户最近 7 天打卡历史 + aiStyle，让 AI 看到节奏与偏好
 async function generateAIEncouragement(
+  userId: number,
   user: { nickname: string; aiStyle: string; streakDays: number; dailyGoal: number | null },
   checkinInfo: { duration: number; content: string; todayMinutes: number; isGoalAchieved: boolean }
 ): Promise<string> {
   try {
     const style = getAIStyle(user.aiStyle);
-    const userPrompt = `用户 ${user.nickname} 刚刚完成了一次打卡：
-- 本次打卡时长：${Math.floor(checkinInfo.duration / 60)}小时${checkinInfo.duration % 60}分钟
-- 打卡内容：${checkinInfo.content}
-- 今日累计时长：${Math.floor(checkinInfo.todayMinutes / 60)}小时${checkinInfo.todayMinutes % 60}分钟
-- 连续打卡天数：${user.streakDays}天
-${user.dailyGoal ? `- 每日目标：${Math.floor(user.dailyGoal / 60)}小时${user.dailyGoal % 60}分钟` : ''}
-${checkinInfo.isGoalAchieved ? '- 今日目标已达成！' : ''}
+    const ctx = await getUserContextForAI(userId);
+    const recentCheckinsText = ctx ? formatRecentCheckins(ctx.recentCheckins) : '（暂无最近打卡）';
+    const totalRecent = ctx ? ctx.totalMinutesRecent : 0;
 
-请用你的风格给予回应和鼓励。`;
+    const userPrompt = `用户 ${user.nickname} 刚刚完成了一次打卡：
+
+【本次打卡】
+- 时长：${Math.floor(checkinInfo.duration / 60)}小时${checkinInfo.duration % 60}分钟
+- 内容：${checkinInfo.content}
+- 今日累计：${Math.floor(checkinInfo.todayMinutes / 60)}小时${checkinInfo.todayMinutes % 60}分钟
+- 当前连续打卡：${user.streakDays}天
+${user.dailyGoal ? `- 每日目标：${Math.floor(user.dailyGoal / 60)}小时${user.dailyGoal % 60}分钟` : ''}
+${checkinInfo.isGoalAchieved ? '- 今日目标已达成 ✨' : ''}
+
+【最近 7 天打卡（共 ${totalRecent} 分钟）】
+${recentCheckinsText}
+
+请用你的风格给一句简短的回应/鼓励。要求：
+- 结合最近打卡的节奏或主题（比如"看你这周第三次刷算法了"）
+- 不要列点、不要复读上面的数据
+- 长度 30-60 字，自然口语
+- 只输出一句话本身`;
 
     const aiResponse = await callAI(style.systemPrompt, userPrompt);
-
-    // 如果 AI 调用失败，回退到随机鼓励语
-    if (!aiResponse) {
+    if (!aiResponse || aiResponse.trim().length < 3) {
       return getRandomEncouragement();
     }
-
-    return aiResponse;
+    return aiResponse.trim();
   } catch (error) {
     console.error('生成 AI 鼓励语失败:', error);
     return getRandomEncouragement();
@@ -1282,6 +1294,7 @@ async function handleCheckin(
       {
         const isGoalAchieved = user.dailyGoal ? todayMinutes >= user.dailyGoal : false;
         const encouragement = await generateAIEncouragement(
+          user.id,
           {
             nickname: user.nickname,
             aiStyle: user.aiStyle,
@@ -2604,6 +2617,27 @@ async function settleStreaks(): Promise<{
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
+// 并发执行 fn，最多 concurrency 个同时运行；保留输入顺序
+async function pMap<T, R>(items: T[], fn: (item: T) => Promise<R>, concurrency: number): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async () => {
+      while (true) {
+        const i = cursor++;
+        if (i >= items.length) return;
+        results[i] = await fn(items[i]);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return results;
+}
+
+// 同时 fork 几个 hermes Python 进程的上限（保护 CPU/内存）
+const AI_CONCURRENCY = 3;
+
 // ----- 模板兜底（AI 失败时使用）-----
 
 function templateReminderMessage(qq: string): string {
@@ -2832,10 +2866,12 @@ async function runStreakWarning(ws: WebSocket): Promise<void> {
       console.log('[cron:streak-warning] 无需提醒');
       return;
     }
-    for (const user of potentialBreaks) {
-      const msg = await generateStreakWarningMessage(user);
+    // AI 调用并发跑（最多 AI_CONCURRENCY 个），保持每用户独立的 prompt + 输出
+    const msgs = await pMap(potentialBreaks, generateStreakWarningMessage, AI_CONCURRENCY);
+    // 发送阶段串行：1 秒间隔避免 NapCat 风控
+    for (const msg of msgs) {
       sendGroupMessage(ws, REMINDER_GROUP_ID, msg);
-      await sleep(1000); // 间隔避免刷屏
+      await sleep(1000);
     }
     console.log(`[cron:streak-warning] 已提醒 ${potentialBreaks.length} 人`);
   } catch (err) {
@@ -2943,9 +2979,9 @@ async function runStreakSettle(ws: WebSocket): Promise<void> {
   try {
     const broken = await settleStreaks();
     const announceable = broken.filter(u => u.brokenStreak >= MIN_STREAK_FOR_REMINDER);
-    if (REMINDER_GROUP_ID && botEnabled) {
-      for (const user of announceable) {
-        const msg = await generateStreakBrokenMessage(user);
+    if (REMINDER_GROUP_ID && botEnabled && announceable.length > 0) {
+      const msgs = await pMap(announceable, generateStreakBrokenMessage, AI_CONCURRENCY);
+      for (const msg of msgs) {
         sendGroupMessage(ws, REMINDER_GROUP_ID, msg);
         await sleep(1000);
       }
