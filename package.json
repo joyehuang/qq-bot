@@ -13,6 +13,7 @@
   "description": "",
   "devDependencies": {
     "@types/node": "^24.10.1",
+    "@types/node-cron": "^3.0.11",
     "@types/ws": "^8.18.1",
     "prisma": "^6.19.1",
     "ts-node": "^10.9.2",
@@ -21,6 +22,8 @@
   },
   "dependencies": {
     "@prisma/client": "^6.19.1",
-    "dotenv": "^17.2.3"
+    "dayjs": "^1.11.20",
+    "dotenv": "^17.2.3",
+    "node-cron": "^4.2.1"
   }
 }

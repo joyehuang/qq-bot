@@ -3,7 +3,20 @@ import WebSocket from 'ws';
 import { PrismaClient, Checkin, Suggestion, Achievement } from '@prisma/client';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import dayjs from 'dayjs';
+import utc from 'dayjs/plugin/utc';
+import timezone from 'dayjs/plugin/timezone';
+import isoWeek from 'dayjs/plugin/isoWeek';
+import cron from 'node-cron';
+import type { ScheduledTask } from 'node-cron';
 import { getAIStyle } from './config/aiStyles';
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
+dayjs.extend(isoWeek);
+
+// 业务时区：所有"今天/昨天/本周一"边界统一用北京时间，与服务器物理时区无关。
+const APP_TZ = 'Asia/Shanghai';
 
 const execFileAsync = promisify(execFile);
 
@@ -634,8 +647,13 @@ if (SUPER_ADMIN_QQ) {
 // 机器人状态
 let botEnabled = true;
 
-// 定时器引用
-let reminderTimer: NodeJS.Timeout | null = null;
+// 已注册的 cron 任务（启动时构建，便于停机时统一停止）
+const cronJobs: ScheduledTask[] = [];
+
+function stopAllCronJobs(): void {
+  for (const job of cronJobs) job.stop();
+  cronJobs.length = 0;
+}
 
 interface Message {
   post_type: string;
@@ -783,21 +801,19 @@ function formatDuration(minutes: number): string {
   return `${mins}分钟`;
 }
 
-// 获取今天的日期（0点）
+// 获取今天的日期（北京时间 0 点）
 function getTodayStart(): Date {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return today;
+  return dayjs().tz(APP_TZ).startOf('day').toDate();
 }
 
-// 获取本周一的日期（0点）
+// 获取本周一的日期（北京时间 0 点）
 function getWeekStart(): Date {
-  const today = new Date();
-  const day = today.getDay();
-  const diff = today.getDate() - day + (day === 0 ? -6 : 1); // 调整到周一
-  const monday = new Date(today.setDate(diff));
-  monday.setHours(0, 0, 0, 0);
-  return monday;
+  return dayjs().tz(APP_TZ).startOf('isoWeek').toDate();
+}
+
+// 北京时间昨天的 0 点
+function getYesterdayStart(): Date {
+  return dayjs().tz(APP_TZ).startOf('day').subtract(1, 'day').toDate();
 }
 
 // 更新连续打卡天数
@@ -811,8 +827,7 @@ async function updateStreak(userId: number): Promise<{ streakDays: number; maxSt
   }
 
   const today = getTodayStart();
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterday = getYesterdayStart();
 
   let newStreakDays = user.streakDays;
   let isNewStreak = false;
@@ -822,8 +837,8 @@ async function updateStreak(userId: number): Promise<{ streakDays: number; maxSt
     newStreakDays = 1;
     isNewStreak = true;
   } else {
-    const lastDate = new Date(user.lastCheckinDate);
-    lastDate.setHours(0, 0, 0, 0);
+    // 把 lastCheckinDate 也按北京时间归到当天 0 点再比较，避免历史数据时区错位
+    const lastDate = dayjs(user.lastCheckinDate).tz(APP_TZ).startOf('day').toDate();
 
     if (lastDate.getTime() === today.getTime()) {
       // 今天已打卡，不更新连续天数
@@ -2502,276 +2517,233 @@ async function checkAdminCheckin(): Promise<boolean> {
   return !!todayCheckin;
 }
 
-// 检查潜在断签用户（今天还没打卡的连续打卡>=5天的用户）
-/* async function checkPotentialStreakBreaks(): Promise<{ userId: number; qqNumber: string; nickname: string; currentStreak: number }[]> {
+// 检查潜在断签用户（今天还没打卡的连续打卡 >= MIN_STREAK_FOR_REMINDER 天的用户）
+// 由 cron 在晚上某点触发；信任 streakDays（已被每日 0 点结算正确清零）
+async function checkPotentialStreakBreaks(): Promise<{
+  userId: number;
+  qqNumber: string;
+  nickname: string;
+  currentStreak: number;
+}[]> {
+  const today = getTodayStart();
   const potentialBreaks: { userId: number; qqNumber: string; nickname: string; currentStreak: number }[] = [];
 
-  const today = getTodayStart();
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-  const now = new Date();
-
-  // 获取所有连续打卡>=5天的用户（且最近一次打卡不早于昨天）
   const usersWithStreak = await prisma.user.findMany({
-    where: {
-      streakDays: { gte: MIN_STREAK_FOR_REMINDER },
-      lastCheckinDate: { gte: yesterday }
-    }
+    where: { streakDays: { gte: MIN_STREAK_FOR_REMINDER } },
   });
 
   for (const user of usersWithStreak) {
-    // 检查今天是否已经打卡
     const todayCheckin = await prisma.checkin.findFirst({
       where: {
         userId: user.id,
-        createdAt: { gte: today, lte: now },
-        isLoan: false
-      }
+        createdAt: { gte: today },
+        isLoan: false,
+      },
     });
 
-    // 如果今天还没打卡，加入提醒列表
     if (!todayCheckin) {
       potentialBreaks.push({
         userId: user.id,
         qqNumber: user.qqNumber,
         nickname: user.nickname,
-        currentStreak: user.streakDays
+        currentStreak: user.streakDays,
       });
     }
   }
 
   return potentialBreaks;
-} */
+}
 
-// 检查所有用户的断签情况（只检查连续打卡>=5天的用户）
-/* async function checkStreakBreaks(): Promise<{ userId: number; qqNumber: string; nickname: string; brokenStreak: number }[]> {
-  const brokenUsers: { userId: number; qqNumber: string; nickname: string; brokenStreak: number }[] = [];
+// 每日 0 点结算：扫所有 streakDays >= 1 的用户，昨天没打卡的全部清零。
+// 返回被清零的用户列表（其中 streakDays >= MIN_STREAK_FOR_REMINDER 的会被通知）
+async function settleStreaks(): Promise<{
+  userId: number;
+  qqNumber: string;
+  nickname: string;
+  brokenStreak: number;
+}[]> {
+  const yesterdayStart = getYesterdayStart();
+  const todayStart = getTodayStart();
+  const broken: { userId: number; qqNumber: string; nickname: string; brokenStreak: number }[] = [];
 
-  const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  yesterday.setHours(0, 0, 0, 0);
-
-  // 获取所有连续打卡>=5天的用户（且最近一次打卡不早于昨天）
   const usersWithStreak = await prisma.user.findMany({
-    where: {
-      streakDays: { gte: MIN_STREAK_FOR_REMINDER },
-      lastCheckinDate: { gte: yesterday }
-    }
+    where: { streakDays: { gte: 1 } },
   });
 
-  const yesterdayEnd = new Date(yesterday);
-  yesterdayEnd.setHours(23, 59, 59, 999);
-
   for (const user of usersWithStreak) {
-    // 检查昨天是否打卡
     const yesterdayCheckin = await prisma.checkin.findFirst({
       where: {
         userId: user.id,
-        createdAt: {
-          gte: yesterday,
-          lte: yesterdayEnd
-        },
-        isLoan: false
-      }
+        createdAt: { gte: yesterdayStart, lt: todayStart },
+        isLoan: false,
+      },
     });
 
-    // 如果昨天没打卡，说明断签了
     if (!yesterdayCheckin) {
-      brokenUsers.push({
+      broken.push({
         userId: user.id,
         qqNumber: user.qqNumber,
         nickname: user.nickname,
-        brokenStreak: user.streakDays
+        brokenStreak: user.streakDays,
       });
 
       await prisma.user.update({
         where: { id: user.id },
-        data: { streakDays: 0 }
+        data: { streakDays: 0 },
       });
     }
   }
 
-  return brokenUsers;
-} */
-
-// 获取下次定时任务时间（毫秒）
-function getNextScheduledTime(hour: number, minute: number): number {
-  const now = new Date();
-  const targetTime = new Date(now.toLocaleString('en-US', { timeZone: REMINDER_TIMEZONE }));
-
-  const scheduledTime = new Date(targetTime);
-  scheduledTime.setHours(hour, minute, 0, 0);
-
-  // 如果今天的时间已过，调度到明天
-  if (scheduledTime <= targetTime) {
-    scheduledTime.setDate(scheduledTime.getDate() + 1);
-  }
-
-  const nowInTimezone = new Date(now.toLocaleString('en-US', { timeZone: REMINDER_TIMEZONE }));
-  const diff = scheduledTime.getTime() - nowInTimezone.getTime();
-
-  return diff;
+  return broken;
 }
 
-// 断签警告定时器
-/* let streakWarningTimer: NodeJS.Timeout | null = null;
+// =====================================================
+// 定时任务消息生成（模板版；下一阶段会被 AI 生成替换）
+// =====================================================
 
-function startStreakWarningTimer(ws: WebSocket): void {
-  if (!REMINDER_GROUP_ID) {
-    console.log('断签警告功能未配置（需要 REMINDER_GROUP_ID）');
-    return;
-  }
-
-  const scheduleNextWarning = () => {
-    const delay = getNextScheduledTime(STREAK_WARNING_HOUR, STREAK_WARNING_MINUTE);
-    const nextTime = new Date(Date.now() + delay);
-
-    console.log(`下次断签警告时间: ${nextTime.toLocaleString('zh-CN', { timeZone: REMINDER_TIMEZONE })} (${REMINDER_TIMEZONE})`);
-
-    streakWarningTimer = setTimeout(async () => {
-      try {
-        const potentialBreaks = await checkPotentialStreakBreaks();
-
-        if (potentialBreaks.length > 0 && botEnabled) {
-          const warningMessages = [
-            (user: any) => `[CQ:at,qq=${user.qqNumber}] 你已经连续打卡 ${user.currentStreak} 天了！今天还没打卡哦，再不打卡连续记录就要断啦！💔`,
-            (user: any) => `[CQ:at,qq=${user.qqNumber}] ${user.currentStreak} 天的努力要白费了？快来打卡！⏰`,
-            (user: any) => `[CQ:at,qq=${user.qqNumber}] 连续 ${user.currentStreak} 天打卡，就差今天了！别让前功尽弃啊～ 🔥`,
-            (user: any) => `[CQ:at,qq=${user.qqNumber}] 警告⚠️ 你的 ${user.currentStreak} 天连续打卡即将归零！快来拯救一下！`
-          ];
-
-          for (const user of potentialBreaks) {
-            const randomMsg = warningMessages[Math.floor(Math.random() * warningMessages.length)](user);
-            sendGroupMessage(ws, REMINDER_GROUP_ID, randomMsg);
-            await new Promise(resolve => setTimeout(resolve, 1000)); // 间隔1秒避免刷屏
-          }
-          console.log(`已发送断签警告消息给 ${potentialBreaks.length} 位用户`);
-        } else if (potentialBreaks.length === 0) {
-          console.log('所有连续打卡>=5天的用户今天都已打卡 ✅');
-        }
-      } catch (error) {
-        console.error('断签警告检查失败:', error);
-      }
-
-      scheduleNextWarning();
-    }, delay);
-  };
-
-  scheduleNextWarning();
-} */
-
-// 断签调侃定时器
-/* let streakTauntTimer: NodeJS.Timeout | null = null;
-
-function startStreakTauntTimer(ws: WebSocket): void {
-  if (!REMINDER_GROUP_ID) {
-    console.log('断签调侃功能未配置（需要 REMINDER_GROUP_ID）');
-    return;
-  }
-
-  const scheduleNextTaunt = () => {
-    const delay = getNextScheduledTime(STREAK_TAUNT_HOUR, STREAK_TAUNT_MINUTE);
-    const nextTime = new Date(Date.now() + delay);
-
-    console.log(`下次断签调侃时间: ${nextTime.toLocaleString('zh-CN', { timeZone: REMINDER_TIMEZONE })} (${REMINDER_TIMEZONE})`);
-
-    streakTauntTimer = setTimeout(async () => {
-      try {
-        const brokenUsers = await checkStreakBreaks();
-
-        if (brokenUsers.length > 0 && botEnabled) {
-          const tauntMessages = [
-            (user: any) => `[CQ:at,qq=${user.qqNumber}] 啊哦～ ${user.brokenStreak} 天的连续打卡说没就没了！昨天竟然忘记打卡了？😱`,
-            (user: any) => `[CQ:at,qq=${user.qqNumber}] 连续打卡 ${user.brokenStreak} 天，前功尽弃！就差一天你竟然断了？！💔`,
-            (user: any) => `[CQ:at,qq=${user.qqNumber}] ${user.brokenStreak} 天的努力化为泡影～昨天摸鱼了？🐟`,
-            (user: any) => `[CQ:at,qq=${user.qqNumber}] 破纪录了！连续 ${user.brokenStreak} 天打卡的记录保持到昨天为止～今天重新开始吧！🎯`,
-            (user: any) => `[CQ:at,qq=${user.qqNumber}] ${user.nickname} 的 ${user.brokenStreak} 天连续打卡被重置了！昨天去哪了？👀`
-          ];
-
-          for (const user of brokenUsers) {
-            const randomMsg = tauntMessages[Math.floor(Math.random() * tauntMessages.length)](user);
-            sendGroupMessage(ws, REMINDER_GROUP_ID, randomMsg);
-            await new Promise(resolve => setTimeout(resolve, 1000)); // 间隔1秒避免刷屏
-          }
-          console.log(`已发送断签调侃消息给 ${brokenUsers.length} 位用户`);
-        } else if (brokenUsers.length === 0) {
-          console.log('昨天没有用户断签 ✅');
-        }
-      } catch (error) {
-        console.error('断签调侃检查失败:', error);
-      }
-
-      scheduleNextTaunt();
-    }, delay);
-  };
-
-  scheduleNextTaunt();
-} */
-
-// 获取下次督促时间（毫秒）
-function getNextReminderTime(): number {
-  const now = new Date();
-
-  // 获取目标时区的当前时间
-  const targetTime = new Date(now.toLocaleString('en-US', { timeZone: REMINDER_TIMEZONE }));
-
-  // 设置今天的督促时间
-  const reminderTime = new Date(targetTime);
-  reminderTime.setHours(REMINDER_HOUR, REMINDER_MINUTE, 0, 0);
-
-  // 如果今天的时间已过，设置为明天
-  if (reminderTime <= targetTime) {
-    reminderTime.setDate(reminderTime.getDate() + 1);
-  }
-
-  // 计算时间差（需要转换回本地时间）
-  const nowInTimezone = new Date(now.toLocaleString('en-US', { timeZone: REMINDER_TIMEZONE }));
-  const diff = reminderTime.getTime() - nowInTimezone.getTime();
-
-  return diff;
+function pickReminderMessage(): string {
+  const messages = [
+    `[CQ:at,qq=${SUPER_ADMIN_QQ}] 今天还没打卡哦！快来记录一下今天的学习/运动吧～ 💪`,
+    `[CQ:at,qq=${SUPER_ADMIN_QQ}] 打卡时间到！今天学习/运动了吗？别忘了记录哦～ 📝`,
+    `[CQ:at,qq=${SUPER_ADMIN_QQ}] 嘿！今天的打卡还没完成呢，加油！ ⏰`,
+    `[CQ:at,qq=${SUPER_ADMIN_QQ}] 温馨提醒：今日打卡尚未完成～ 🔔`,
+  ];
+  return messages[Math.floor(Math.random() * messages.length)];
 }
 
-// 启动打卡督促定时器
-function startReminderTimer(ws: WebSocket): void {
-  if (!SUPER_ADMIN_QQ || !REMINDER_GROUP_ID) {
-    console.log('督促功能未配置（需要 ADMIN_QQ 和 REMINDER_GROUP_ID）');
-    return;
+function pickStreakWarningMessage(user: { qqNumber: string; currentStreak: number }): string {
+  const messages = [
+    `[CQ:at,qq=${user.qqNumber}] 你已经连续打卡 ${user.currentStreak} 天了！今天还没打卡哦，再不打卡连续记录就要断啦！💔`,
+    `[CQ:at,qq=${user.qqNumber}] ${user.currentStreak} 天的努力要白费了？快来打卡！⏰`,
+    `[CQ:at,qq=${user.qqNumber}] 连续 ${user.currentStreak} 天打卡，就差今天了！别让前功尽弃啊～ 🔥`,
+    `[CQ:at,qq=${user.qqNumber}] 警告⚠️ 你的 ${user.currentStreak} 天连续打卡即将归零！快来拯救一下！`,
+  ];
+  return messages[Math.floor(Math.random() * messages.length)];
+}
+
+function pickStreakBrokenMessage(user: { qqNumber: string; nickname: string; brokenStreak: number }): string {
+  const messages = [
+    `[CQ:at,qq=${user.qqNumber}] 啊哦～ ${user.brokenStreak} 天的连续打卡说没就没了！昨天竟然忘记打卡了？😱`,
+    `[CQ:at,qq=${user.qqNumber}] 连续打卡 ${user.brokenStreak} 天，前功尽弃！就差一天你竟然断了？！💔`,
+    `[CQ:at,qq=${user.qqNumber}] ${user.brokenStreak} 天的努力化为泡影～昨天摸鱼了？🐟`,
+    `[CQ:at,qq=${user.qqNumber}] 破纪录了！连续 ${user.brokenStreak} 天打卡的记录保持到昨天为止～今天重新开始吧！🎯`,
+    `[CQ:at,qq=${user.qqNumber}] ${user.nickname} 的 ${user.brokenStreak} 天连续打卡被重置了！昨天去哪了？👀`,
+  ];
+  return messages[Math.floor(Math.random() * messages.length)];
+}
+
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+// =====================================================
+// Cron handlers — 每个 handler 是单次执行的纯逻辑，由 node-cron 触发
+// =====================================================
+
+async function runDailyReminder(ws: WebSocket): Promise<void> {
+  if (!SUPER_ADMIN_QQ || !REMINDER_GROUP_ID || !botEnabled) return;
+  try {
+    const hasCheckedIn = await checkAdminCheckin();
+    if (hasCheckedIn) {
+      console.log('[cron:reminder] 管理员今日已打卡，跳过');
+      return;
+    }
+    sendGroupMessage(ws, REMINDER_GROUP_ID, pickReminderMessage());
+    console.log('[cron:reminder] 已发送打卡督促');
+  } catch (err) {
+    console.error('[cron:reminder] 失败:', err);
+  }
+}
+
+async function runStreakWarning(ws: WebSocket): Promise<void> {
+  if (!REMINDER_GROUP_ID || !botEnabled) return;
+  try {
+    const potentialBreaks = await checkPotentialStreakBreaks();
+    if (potentialBreaks.length === 0) {
+      console.log('[cron:streak-warning] 无需提醒');
+      return;
+    }
+    for (const user of potentialBreaks) {
+      sendGroupMessage(ws, REMINDER_GROUP_ID, pickStreakWarningMessage(user));
+      await sleep(1000); // 间隔避免刷屏
+    }
+    console.log(`[cron:streak-warning] 已提醒 ${potentialBreaks.length} 人`);
+  } catch (err) {
+    console.error('[cron:streak-warning] 失败:', err);
+  }
+}
+
+// 每日 0 点结算：清零昨日断签用户的 streakDays，并对原 streak >= 阈值的发"已断"通知
+async function runStreakSettle(ws: WebSocket): Promise<void> {
+  try {
+    const broken = await settleStreaks();
+    const announceable = broken.filter(u => u.brokenStreak >= MIN_STREAK_FOR_REMINDER);
+    if (REMINDER_GROUP_ID && botEnabled) {
+      for (const user of announceable) {
+        sendGroupMessage(ws, REMINDER_GROUP_ID, pickStreakBrokenMessage(user));
+        await sleep(1000);
+      }
+    }
+    console.log(`[cron:streak-settle] 清零 ${broken.length} 人，通知 ${announceable.length} 人`);
+  } catch (err) {
+    console.error('[cron:streak-settle] 失败:', err);
+  }
+}
+
+// 注册所有定时任务到 node-cron。所有 cron 表达式都按北京时间解析，与服务器物理时区无关。
+function registerCronJobs(ws: WebSocket): void {
+  stopAllCronJobs();
+
+  const opts = { timezone: APP_TZ } as const;
+
+  // 每日 0:01 — 断签结算（清零 + 通知）
+  cronJobs.push(cron.schedule('1 0 * * *', () => runStreakSettle(ws), opts));
+  console.log(`[cron] 断签结算已注册：每天 00:01 (${APP_TZ})`);
+
+  // 每日 0:05 — 每周前三头衔更新
+  if (TITLE_GROUP_ID) {
+    cronJobs.push(
+      cron.schedule(
+        '5 0 * * *',
+        async () => {
+          try {
+            await updateWeeklyTopTitles(ws);
+            console.log('[cron:weekly-title] 已更新');
+          } catch (err) {
+            console.error('[cron:weekly-title] 失败:', err);
+          }
+        },
+        opts,
+      ),
+    );
+    console.log(`[cron] 每周头衔已注册：每天 00:05 (${APP_TZ})`);
   }
 
-  const scheduleNextReminder = () => {
-    const delay = getNextReminderTime();
-    const nextTime = new Date(Date.now() + delay);
+  // 打卡督促 — 每天 REMINDER_HOUR:REMINDER_MINUTE（默认 19:00）
+  if (SUPER_ADMIN_QQ && REMINDER_GROUP_ID) {
+    cronJobs.push(
+      cron.schedule(`${REMINDER_MINUTE} ${REMINDER_HOUR} * * *`, () => runDailyReminder(ws), opts),
+    );
+    console.log(
+      `[cron] 打卡督促已注册：每天 ${REMINDER_HOUR}:${String(REMINDER_MINUTE).padStart(2, '0')} (${APP_TZ})`,
+    );
+  } else {
+    console.log('[cron] 打卡督促未配置（需要 ADMIN_QQ 和 REMINDER_GROUP_ID）');
+  }
 
-    console.log(`下次打卡督促时间: ${nextTime.toLocaleString('zh-CN', { timeZone: REMINDER_TIMEZONE })} (${REMINDER_TIMEZONE})`);
+  // 断签警告 — 每天 STREAK_WARNING_HOUR:STREAK_WARNING_MINUTE（默认 21:00）
+  if (REMINDER_GROUP_ID) {
+    cronJobs.push(
+      cron.schedule(
+        `${STREAK_WARNING_MINUTE} ${STREAK_WARNING_HOUR} * * *`,
+        () => runStreakWarning(ws),
+        opts,
+      ),
+    );
+    console.log(
+      `[cron] 断签警告已注册：每天 ${STREAK_WARNING_HOUR}:${String(STREAK_WARNING_MINUTE).padStart(2, '0')} (${APP_TZ})`,
+    );
+  }
 
-    reminderTimer = setTimeout(async () => {
-      try {
-        const hasCheckedIn = await checkAdminCheckin();
-
-        if (!hasCheckedIn && botEnabled) {
-          const messages = [
-            `[CQ:at,qq=${SUPER_ADMIN_QQ}] 今天还没打卡哦！快来记录一下今天的学习/运动吧～ 💪`,
-            `[CQ:at,qq=${SUPER_ADMIN_QQ}] 打卡时间到！今天学习/运动了吗？别忘了记录哦～ 📝`,
-            `[CQ:at,qq=${SUPER_ADMIN_QQ}] 嘿！今天的打卡还没完成呢，加油！ ⏰`,
-            `[CQ:at,qq=${SUPER_ADMIN_QQ}] 温馨提醒：今日打卡尚未完成～ 🔔`
-          ];
-          const randomMsg = messages[Math.floor(Math.random() * messages.length)];
-          sendGroupMessage(ws, REMINDER_GROUP_ID, randomMsg);
-          console.log('已发送打卡督促消息');
-        } else if (hasCheckedIn) {
-          console.log('管理员今日已打卡，跳过督促');
-        }
-      } catch (error) {
-        console.error('督促检查失败:', error);
-      }
-
-      // 调度下一次
-      scheduleNextReminder();
-    }, delay);
-  };
-
-  scheduleNextReminder();
-  console.log('打卡督促定时器已启动');
+  console.log(`[cron] 共 ${cronJobs.length} 个定时任务已注册`);
 }
 
 function connectBot() {
@@ -2783,38 +2755,18 @@ function connectBot() {
   ws.on('open', async () => {
     console.log('✅ 已连接到 NapCat');
 
-    // 启动打卡督促定时器
-    startReminderTimer(ws);
-
-    // 启动断签提醒定时器（暂时禁用：该功能目前有 bug）
-    // startStreakWarningTimer(ws);
-    // startStreakTauntTimer(ws);
-
-    // 启动学习督促定时器
-
-    // 初始化头衔系统：立即更新一次每周前三
+    // 头衔系统：启动时立即跑一次（保证当天生效），之后由 cron 每日 0:05 更新
     if (TITLE_GROUP_ID) {
-      await updateWeeklyTopTitles(ws);
-      console.log('已初始化每周前三头衔');
-
-      // 启动每日定时器，每天0点更新每周前三头衔
-      const scheduleWeeklyTitleUpdate = () => {
-        const now = new Date();
-        const tomorrow = new Date(now);
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        tomorrow.setHours(0, 0, 0, 0);
-        const delay = tomorrow.getTime() - now.getTime();
-
-        setTimeout(async () => {
-          await updateWeeklyTopTitles(ws);
-          console.log('已更新每周前三头衔');
-          scheduleWeeklyTitleUpdate(); // 递归调度下一次更新
-        }, delay);
-      };
-
-      scheduleWeeklyTitleUpdate();
-      console.log('每周头衔定时器已启动');
+      try {
+        await updateWeeklyTopTitles(ws);
+        console.log('已初始化每周前三头衔');
+      } catch (err) {
+        console.error('初始化每周前三头衔失败:', err);
+      }
     }
+
+    // 注册所有定时任务（北京时间）
+    registerCronJobs(ws);
   });
 
   ws.on('message', async (data) => {
@@ -3229,11 +3181,8 @@ function connectBot() {
 
   ws.on('close', () => {
     console.log('连接已断开，5秒后重连...');
-    // 清除定时器
-    if (reminderTimer) {
-      clearTimeout(reminderTimer);
-      reminderTimer = null;
-    }
+    // 停掉所有 cron 任务，避免重连后重复注册
+    stopAllCronJobs();
     setTimeout(connectBot, 5000);
   });
 
@@ -3245,9 +3194,7 @@ function connectBot() {
 // 优雅退出
 process.on('SIGINT', async () => {
   console.log('\n正在关闭...');
-  if (reminderTimer) {
-    clearTimeout(reminderTimer);
-  }
+  stopAllCronJobs();
   await prisma.$disconnect();
   process.exit(0);
 });
