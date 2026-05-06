@@ -2598,20 +2598,25 @@ async function settleStreaks(): Promise<{
 }
 
 // =====================================================
-// 定时任务消息生成（模板版；下一阶段会被 AI 生成替换）
+// 定时任务消息生成
+// 优先级：AI（hermes + 用户最近 7 天打卡上下文）→ 失败回退到模板池
 // =====================================================
 
-function pickReminderMessage(): string {
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+// ----- 模板兜底（AI 失败时使用）-----
+
+function templateReminderMessage(qq: string): string {
   const messages = [
-    `[CQ:at,qq=${SUPER_ADMIN_QQ}] 今天还没打卡哦！快来记录一下今天的学习/运动吧～ 💪`,
-    `[CQ:at,qq=${SUPER_ADMIN_QQ}] 打卡时间到！今天学习/运动了吗？别忘了记录哦～ 📝`,
-    `[CQ:at,qq=${SUPER_ADMIN_QQ}] 嘿！今天的打卡还没完成呢，加油！ ⏰`,
-    `[CQ:at,qq=${SUPER_ADMIN_QQ}] 温馨提醒：今日打卡尚未完成～ 🔔`,
+    `[CQ:at,qq=${qq}] 今天还没打卡哦！快来记录一下今天的学习/运动吧～ 💪`,
+    `[CQ:at,qq=${qq}] 打卡时间到！今天学习/运动了吗？别忘了记录哦～ 📝`,
+    `[CQ:at,qq=${qq}] 嘿！今天的打卡还没完成呢，加油！ ⏰`,
+    `[CQ:at,qq=${qq}] 温馨提醒：今日打卡尚未完成～ 🔔`,
   ];
   return messages[Math.floor(Math.random() * messages.length)];
 }
 
-function pickStreakWarningMessage(user: { qqNumber: string; currentStreak: number }): string {
+function templateStreakWarningMessage(user: { qqNumber: string; currentStreak: number }): string {
   const messages = [
     `[CQ:at,qq=${user.qqNumber}] 你已经连续打卡 ${user.currentStreak} 天了！今天还没打卡哦，再不打卡连续记录就要断啦！💔`,
     `[CQ:at,qq=${user.qqNumber}] ${user.currentStreak} 天的努力要白费了？快来打卡！⏰`,
@@ -2621,7 +2626,7 @@ function pickStreakWarningMessage(user: { qqNumber: string; currentStreak: numbe
   return messages[Math.floor(Math.random() * messages.length)];
 }
 
-function pickStreakBrokenMessage(user: { qqNumber: string; nickname: string; brokenStreak: number }): string {
+function templateStreakBrokenMessage(user: { qqNumber: string; nickname: string; brokenStreak: number }): string {
   const messages = [
     `[CQ:at,qq=${user.qqNumber}] 啊哦～ ${user.brokenStreak} 天的连续打卡说没就没了！昨天竟然忘记打卡了？😱`,
     `[CQ:at,qq=${user.qqNumber}] 连续打卡 ${user.brokenStreak} 天，前功尽弃！就差一天你竟然断了？！💔`,
@@ -2632,7 +2637,172 @@ function pickStreakBrokenMessage(user: { qqNumber: string; nickname: string; bro
   return messages[Math.floor(Math.random() * messages.length)];
 }
 
-const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+// ----- AI 生成上下文 -----
+
+interface RecentCheckinSummary {
+  date: string;       // "MM-DD HH:mm" 北京时间
+  duration: number;
+  content: string;
+  subcategory: string | null;
+}
+
+interface UserContextForAI {
+  nickname: string;
+  qqNumber: string;
+  aiStyle: string;
+  streakDays: number;
+  maxStreak: number;
+  recentCheckins: RecentCheckinSummary[];
+  totalMinutesRecent: number;
+}
+
+async function getUserContextForAI(userId: number, days: number = 7): Promise<UserContextForAI | null> {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) return null;
+
+  const since = dayjs().tz(APP_TZ).subtract(days, 'day').startOf('day').toDate();
+  const checkins = await prisma.checkin.findMany({
+    where: { userId, createdAt: { gte: since }, isLoan: false },
+    orderBy: { createdAt: 'desc' },
+    take: 20,
+  });
+
+  return {
+    nickname: user.nickname,
+    qqNumber: user.qqNumber,
+    aiStyle: user.aiStyle || 'encourage',
+    streakDays: user.streakDays,
+    maxStreak: user.maxStreak,
+    recentCheckins: checkins.map(c => ({
+      date: dayjs(c.createdAt).tz(APP_TZ).format('MM-DD HH:mm'),
+      duration: c.duration,
+      content: c.content,
+      subcategory: c.subcategory,
+    })),
+    totalMinutesRecent: checkins.reduce((sum, c) => sum + c.duration, 0),
+  };
+}
+
+function formatRecentCheckins(items: RecentCheckinSummary[]): string {
+  if (items.length === 0) return '（最近无打卡记录）';
+  return items
+    .slice(0, 10)
+    .map(c => `- ${c.date} [${c.subcategory || '其他'}] ${c.duration}分钟：${c.content}`)
+    .join('\n');
+}
+
+// 确保 AI 生成的消息包含 @ 标签；缺失则前置补上
+function ensureAtTag(text: string, qq: string): string {
+  if (text.includes(`[CQ:at,qq=${qq}]`)) return text;
+  return `[CQ:at,qq=${qq}] ${text.trim()}`;
+}
+
+// ----- AI 生成：打卡督促 -----
+
+async function generateReminderMessage(qq: string): Promise<string> {
+  const fallback = templateReminderMessage(qq);
+  try {
+    const user = await prisma.user.findUnique({ where: { qqNumber: qq } });
+    if (!user) return fallback;
+    const ctx = await getUserContextForAI(user.id);
+    if (!ctx) return fallback;
+
+    const style = getAIStyle(ctx.aiStyle);
+    const today = dayjs().tz(APP_TZ).format('YYYY-MM-DD');
+
+    const userPrompt = `今天是北京时间 ${today}，需要给用户「${ctx.nickname}」发一条「今日打卡督促」消息。
+
+用户信息：
+- 当前连续打卡：${ctx.streakDays} 天（历史最长 ${ctx.maxStreak} 天）
+- 最近 7 天总时长：${ctx.totalMinutesRecent} 分钟
+- 最近打卡记录：
+${formatRecentCheckins(ctx.recentCheckins)}
+
+请生成一条该用户今天还没打卡的提醒消息。要求：
+- 自然、个性化，结合最近打卡记录给出有温度的提醒
+- 长度 30-60 字
+- 不要包含 @ 标签（系统会自动添加）
+- 只输出消息内容本身，不要解释、不要前缀`;
+
+    const result = await callHermesAgent(style.systemPrompt, userPrompt);
+    if (!result || result.trim().length < 5) return fallback;
+    return ensureAtTag(result.trim(), qq);
+  } catch (err) {
+    console.error('[ai:reminder] 失败，回退模板:', err);
+    return fallback;
+  }
+}
+
+// ----- AI 生成：断签警告（今天还没打，再不打就要断）-----
+
+async function generateStreakWarningMessage(target: {
+  userId: number;
+  qqNumber: string;
+  nickname: string;
+  currentStreak: number;
+}): Promise<string> {
+  const fallback = templateStreakWarningMessage(target);
+  try {
+    const ctx = await getUserContextForAI(target.userId);
+    if (!ctx) return fallback;
+
+    const style = getAIStyle(ctx.aiStyle);
+    const userPrompt = `用户「${ctx.nickname}」已经连续打卡 ${ctx.streakDays} 天，但今天还没打卡，再不打就要断签了。
+
+最近打卡记录：
+${formatRecentCheckins(ctx.recentCheckins)}
+
+请生成一条针对该用户的「断签警告」消息。要求：
+- 强调连续 ${ctx.streakDays} 天的努力即将白费
+- 自然、个性化、有紧迫感
+- 长度 30-60 字
+- 不要包含 @ 标签（系统会自动添加）
+- 只输出消息内容本身`;
+
+    const result = await callHermesAgent(style.systemPrompt, userPrompt);
+    if (!result || result.trim().length < 5) return fallback;
+    return ensureAtTag(result.trim(), target.qqNumber);
+  } catch (err) {
+    console.error('[ai:streak-warning] 失败，回退模板:', err);
+    return fallback;
+  }
+}
+
+// ----- AI 生成：断签调侃（已经断了）-----
+
+async function generateStreakBrokenMessage(target: {
+  userId: number;
+  qqNumber: string;
+  nickname: string;
+  brokenStreak: number;
+}): Promise<string> {
+  const fallback = templateStreakBrokenMessage(target);
+  try {
+    const ctx = await getUserContextForAI(target.userId);
+    if (!ctx) return fallback;
+
+    const style = getAIStyle(ctx.aiStyle);
+    const userPrompt = `用户「${ctx.nickname}」连续打卡 ${target.brokenStreak} 天，但昨天没打卡，连续记录刚刚断了。
+
+最近打卡记录：
+${formatRecentCheckins(ctx.recentCheckins)}
+
+请生成一条针对该用户的「断签调侃」消息。要求：
+- 调侃 ${target.brokenStreak} 天连续记录的中断，可以略带遗憾或玩笑
+- 结尾鼓励今天重新开始
+- 自然、个性化
+- 长度 30-60 字
+- 不要包含 @ 标签（系统会自动添加）
+- 只输出消息内容本身`;
+
+    const result = await callHermesAgent(style.systemPrompt, userPrompt);
+    if (!result || result.trim().length < 5) return fallback;
+    return ensureAtTag(result.trim(), target.qqNumber);
+  } catch (err) {
+    console.error('[ai:streak-broken] 失败，回退模板:', err);
+    return fallback;
+  }
+}
 
 // =====================================================
 // Cron handlers — 每个 handler 是单次执行的纯逻辑，由 node-cron 触发
@@ -2646,7 +2816,8 @@ async function runDailyReminder(ws: WebSocket): Promise<void> {
       console.log('[cron:reminder] 管理员今日已打卡，跳过');
       return;
     }
-    sendGroupMessage(ws, REMINDER_GROUP_ID, pickReminderMessage());
+    const msg = await generateReminderMessage(SUPER_ADMIN_QQ);
+    sendGroupMessage(ws, REMINDER_GROUP_ID, msg);
     console.log('[cron:reminder] 已发送打卡督促');
   } catch (err) {
     console.error('[cron:reminder] 失败:', err);
@@ -2662,12 +2833,108 @@ async function runStreakWarning(ws: WebSocket): Promise<void> {
       return;
     }
     for (const user of potentialBreaks) {
-      sendGroupMessage(ws, REMINDER_GROUP_ID, pickStreakWarningMessage(user));
+      const msg = await generateStreakWarningMessage(user);
+      sendGroupMessage(ws, REMINDER_GROUP_ID, msg);
       await sleep(1000); // 间隔避免刷屏
     }
     console.log(`[cron:streak-warning] 已提醒 ${potentialBreaks.length} 人`);
   } catch (err) {
     console.error('[cron:streak-warning] 失败:', err);
+  }
+}
+
+// 群周报：每周一 09:00 北京时间，汇总上周一到本周一的群整体打卡数据 + AI 总结
+async function runWeeklyGroupReport(ws: WebSocket): Promise<void> {
+  if (!REMINDER_GROUP_ID || !botEnabled) return;
+
+  const weekEnd = dayjs().tz(APP_TZ).startOf('isoWeek').toDate();             // 本周一 00:00
+  const weekStart = dayjs().tz(APP_TZ).startOf('isoWeek').subtract(7, 'day').toDate(); // 上周一 00:00
+
+  try {
+    const checkins = await prisma.checkin.findMany({
+      where: { createdAt: { gte: weekStart, lt: weekEnd }, isLoan: false },
+      include: { user: true },
+    });
+
+    if (checkins.length === 0) {
+      console.log('[cron:weekly-report] 上周无打卡数据，跳过');
+      return;
+    }
+
+    // 按用户聚合
+    const userStats = new Map<number, { user: { nickname: string }; minutes: number; count: number }>();
+    const categoryStats = new Map<string, number>();
+    for (const c of checkins) {
+      const stat = userStats.get(c.userId) || { user: { nickname: c.user.nickname }, minutes: 0, count: 0 };
+      stat.minutes += c.duration;
+      stat.count += 1;
+      userStats.set(c.userId, stat);
+      if (c.category) {
+        categoryStats.set(c.category, (categoryStats.get(c.category) || 0) + c.duration);
+      }
+    }
+
+    const topUsers = [...userStats.values()].sort((a, b) => b.minutes - a.minutes).slice(0, 5);
+    const totalMinutes = [...userStats.values()].reduce((s, u) => s + u.minutes, 0);
+    const activeUserCount = userStats.size;
+
+    // 拼模板部分（数据展示）
+    const rangeLabel = `${dayjs(weekStart).tz(APP_TZ).format('MM/DD')} - ${dayjs(weekEnd)
+      .subtract(1, 'day')
+      .tz(APP_TZ)
+      .format('MM/DD')}`;
+    let message = `📅 群周报 (${rangeLabel})\n\n`;
+    message += `📊 整体表现\n`;
+    message += `├ 活跃用户: ${activeUserCount} 人\n`;
+    message += `├ 总打卡: ${checkins.length} 次\n`;
+    message += `└ 总时长: ${formatDuration(totalMinutes)}\n\n`;
+
+    message += `🏆 本周 TOP\n`;
+    topUsers.forEach((u, i) => {
+      const medal = ['🥇', '🥈', '🥉'][i] || `${i + 1}.`;
+      message += `${medal} ${u.user.nickname} ${formatDuration(u.minutes)} (${u.count}次)\n`;
+    });
+
+    if (categoryStats.size > 0) {
+      message += `\n📚 分类分布\n`;
+      const sortedCats = [...categoryStats.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+      for (const [cat, minutes] of sortedCats) {
+        const pct = Math.round((minutes / totalMinutes) * 100);
+        message += `${cat} ${pct}% (${formatDuration(minutes)})\n`;
+      }
+    }
+
+    // AI 总结
+    const systemPrompt = `你是一个 QQ 打卡群的 AI 助手，擅长生成群周报总结。语气温暖、积极、有洞察力，可以适当用群友昵称表扬。`;
+    const userPrompt = `本周（北京时间 ${rangeLabel}）群打卡数据：
+
+整体：
+- 活跃用户: ${activeUserCount} 人
+- 总打卡次数: ${checkins.length}
+- 总时长: ${totalMinutes} 分钟
+
+TOP 用户:
+${topUsers.map((u, i) => `${i + 1}. ${u.user.nickname} ${u.minutes}分钟 (${u.count}次)`).join('\n')}
+
+分类分布:
+${[...categoryStats.entries()].sort((a, b) => b[1] - a[1]).map(([cat, m]) => `- ${cat}: ${m}分钟`).join('\n') || '（无分类数据）'}
+
+请生成一段 80-150 字的群周报总结：
+- 表扬整体表现 + TOP 用户
+- 提一个观察（如分类偏好、时长趋势）
+- 给下周一个鼓励
+- 语言自然连贯，不要列点
+- 只输出总结正文`;
+
+    const aiSummary = await callHermesAgent(systemPrompt, userPrompt);
+    if (aiSummary && aiSummary.trim().length > 5) {
+      message += `\n🤖 本周观察:\n${aiSummary.trim()}`;
+    }
+
+    sendGroupMessage(ws, REMINDER_GROUP_ID, message);
+    console.log(`[cron:weekly-report] 已发送群周报（${activeUserCount} 人，${checkins.length} 次打卡）`);
+  } catch (err) {
+    console.error('[cron:weekly-report] 失败:', err);
   }
 }
 
@@ -2678,7 +2945,8 @@ async function runStreakSettle(ws: WebSocket): Promise<void> {
     const announceable = broken.filter(u => u.brokenStreak >= MIN_STREAK_FOR_REMINDER);
     if (REMINDER_GROUP_ID && botEnabled) {
       for (const user of announceable) {
-        sendGroupMessage(ws, REMINDER_GROUP_ID, pickStreakBrokenMessage(user));
+        const msg = await generateStreakBrokenMessage(user);
+        sendGroupMessage(ws, REMINDER_GROUP_ID, msg);
         await sleep(1000);
       }
     }
@@ -2741,6 +3009,12 @@ function registerCronJobs(ws: WebSocket): void {
     console.log(
       `[cron] 断签警告已注册：每天 ${STREAK_WARNING_HOUR}:${String(STREAK_WARNING_MINUTE).padStart(2, '0')} (${APP_TZ})`,
     );
+  }
+
+  // 群周报 — 每周一 09:00（北京时间）
+  if (REMINDER_GROUP_ID) {
+    cronJobs.push(cron.schedule('0 9 * * 1', () => runWeeklyGroupReport(ws), opts));
+    console.log(`[cron] 群周报已注册：每周一 09:00 (${APP_TZ})`);
   }
 
   console.log(`[cron] 共 ${cronJobs.length} 个定时任务已注册`);
