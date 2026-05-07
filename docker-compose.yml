@@ -30,8 +30,10 @@ services:
     image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-joyehuang}/qq-bot-admin-server:latest
     container_name: qq-bot-admin-api
     restart: unless-stopped
-    ports:
-      - "3001:3001"
+    # 不向宿主公开 3001 端口；只在 compose 内部网络对 admin-web 可见，
+    # 外部一律走 admin-web 的 nginx /api 反代 → Caddy → 域名。
+    expose:
+      - "3001"
     volumes:
       - ./prisma:/app/prisma
     environment:
