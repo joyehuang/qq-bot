@@ -71,3 +71,28 @@ model Achievement {
   @@map("achievements")
 }
 
+// AI 调用记录表（hermes 调用埋点 → 后台 dashboard）
+model AICallLog {
+  id               Int      @id @default(autoincrement())
+  scenario         String                                // 场景：classify / checkin_reply / reminder / streak_warning / streak_broken / user_analysis / weekly_user / weekly_group
+  callerQQ         String?  @map("caller_qq")           // 触发该 AI 调用的用户 QQ（如适用）
+  groupQQ          String?  @map("group_qq")            // 群号（如适用）
+  model            String?                               // 实际使用的 model（hermes CLI 不强制返回，可选）
+  systemPrompt     String   @map("system_prompt")
+  userPrompt       String   @map("user_prompt")
+  responseText     String?  @map("response_text")       // 失败/超时时为 null
+  durationMs       Int      @map("duration_ms")
+  status           String                                // success / error / timeout
+  errorMsg         String?  @map("error_msg")
+  promptTokens     Int?     @map("prompt_tokens")       // 预留：当前 hermes -Q 不输出
+  completionTokens Int?     @map("completion_tokens")   // 预留
+  sessionId        String?  @map("session_id")          // hermes session_id（可用于 --resume 复现）
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@index([scenario, createdAt])
+  @@index([callerQQ])
+  @@index([status])
+  @@map("ai_call_logs")
+}
+

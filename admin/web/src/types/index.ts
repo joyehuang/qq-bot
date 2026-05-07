@@ -122,6 +122,37 @@ export interface CategoryStats {
 }
 
 /**
+ * AI 调用日志类型
+ */
+export interface AICallLog {
+  id: number;
+  scenario: string;
+  callerQQ: string | null;
+  groupQQ: string | null;
+  model: string | null;
+  systemPrompt: string;
+  userPrompt: string;
+  responseText: string | null;
+  durationMs: number;
+  status: 'success' | 'error' | 'timeout';
+  errorMsg: string | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  sessionId: string | null;
+  createdAt: string;
+}
+
+export interface AICallStats {
+  total: number;
+  today: { count: number; avgDurationMs: number };
+  week: { count: number; avgDurationMs: number; successRate: number };
+  all: { avgDurationMs: number; totalDurationMs: number };
+  byScenario: Array<{ scenario: string; count: number; avgDurationMs: number }>;
+  byStatus: Array<{ status: string; count: number }>;
+  trend: Array<{ date: string; total: number; success: number; error: number }>;
+}
+
+/**
  * 排行榜类型
  */
 export interface Leaderboard {

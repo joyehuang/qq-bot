@@ -85,6 +85,7 @@ import {
   DataAnalysis,
   Calendar,
   User,
+  MagicStick,
   Fold,
   Expand,
   Moon,
@@ -135,6 +136,11 @@ const menuItems = [
     path: '/users',
     title: '用户管理',
     icon: User,
+  },
+  {
+    path: '/ai-calls',
+    title: 'AI 调用记录',
+    icon: MagicStick,
   },
 ];
 

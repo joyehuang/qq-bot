@@ -380,6 +380,7 @@ qq-bot/
 | **排行榜** | 本周打卡排行榜 |
 | **打卡记录管理** | 查看、搜索、筛选、删除打卡记录，支持导出 CSV |
 | **用户管理** | 查看用户列表和详情，包括打卡统计和成就 |
+| **AI 调用记录** | 每条 hermes 调用的 prompt/response/耗时/状态，按场景切片 + 14 天趋势 |
 | **暗黑模式** | 支持明/暗主题切换 |
 | **响应式设计** | 支持移动端访问 |
 
@@ -410,7 +411,8 @@ npm run dev
 ### Docker 部署
 
 ```bash
-docker compose up -d --build admin-api admin-web
+docker compose pull admin-api admin-web   # 拉 GHCR 上的最新镜像
+docker compose up -d --no-deps admin-api admin-web   # 仅起 admin 两个服务，不动 napcat
 ```
 
 访问地址：

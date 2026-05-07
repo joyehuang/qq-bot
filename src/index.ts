@@ -91,12 +91,21 @@ const VERSION_FEATURES = [
   '撤销打卡功能'
 ];
 
+// AI 调用元数据（用于埋点：写入 ai_call_logs，供后台 dashboard 分析）。
+// scenario 必填，方便按场景切片；callerQQ/groupQQ 在能拿到时也尽量填。
+interface AICallMeta {
+  scenario: string;
+  callerQQ?: string;
+  groupQQ?: string;
+}
+
 interface HermesAgentOptions {
   systemPrompt: string;
   userPrompt: string;
   model?: string;
   profile?: string;
   timeoutMs?: number;
+  meta?: AICallMeta;
 }
 
 interface HermesAgentResult {
@@ -106,6 +115,41 @@ interface HermesAgentResult {
   sessionId?: string;
 }
 
+// 把一次 hermes 调用落盘到 ai_call_logs。失败静默吞掉——这条记录丢了不能让 AI 调用本身坏掉。
+async function recordAICall(params: {
+  meta: AICallMeta | undefined;
+  systemPrompt: string;
+  userPrompt: string;
+  model?: string;
+  durationMs: number;
+  status: 'success' | 'error' | 'timeout';
+  responseText: string | null;
+  errorMsg?: string;
+  sessionId?: string;
+}): Promise<void> {
+  // meta 没传也写一条（scenario=unknown），便于发现漏埋点的 caller。
+  const scenario = params.meta?.scenario ?? 'unknown';
+  try {
+    await prisma.aICallLog.create({
+      data: {
+        scenario,
+        callerQQ: params.meta?.callerQQ ?? null,
+        groupQQ: params.meta?.groupQQ ?? null,
+        model: params.model ?? null,
+        systemPrompt: params.systemPrompt,
+        userPrompt: params.userPrompt,
+        responseText: params.responseText,
+        durationMs: params.durationMs,
+        status: params.status,
+        errorMsg: params.errorMsg ?? null,
+        sessionId: params.sessionId ?? null,
+      },
+    });
+  } catch (err) {
+    console.error('[AICallLog] 写入失败（不影响主流程）:', err);
+  }
+}
+
 async function callHermesAgentV2(options: HermesAgentOptions): Promise<HermesAgentResult> {
   const {
     systemPrompt,
@@ -113,6 +157,7 @@ async function callHermesAgentV2(options: HermesAgentOptions): Promise<HermesAge
     model,
     profile = 'community',
     timeoutMs = 30000,
+    meta,
   } = options;
   const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
 
@@ -122,6 +167,7 @@ async function callHermesAgentV2(options: HermesAgentOptions): Promise<HermesAge
     args.push('-m', model);
   }
 
+  const startedAt = Date.now();
   try {
     const { stdout, stderr } = await execFileAsync('hermes', args, {
       timeout: timeoutMs,
@@ -148,11 +194,25 @@ async function callHermesAgentV2(options: HermesAgentOptions): Promise<HermesAge
     }
 
     const content = stdout.trim();
+    const durationMs = Date.now() - startedAt;
+    void recordAICall({
+      meta,
+      systemPrompt,
+      userPrompt,
+      model,
+      durationMs,
+      status: 'success',
+      responseText: content || null,
+      sessionId,
+    });
     return { success: true, content: content || null, sessionId };
   } catch (error: any) {
+    const durationMs = Date.now() - startedAt;
     let errorMsg = '未知错误';
+    let status: 'error' | 'timeout' = 'error';
     if (error?.killed && (error.signal === 'SIGTERM' || error.code === 'ETIMEDOUT')) {
       errorMsg = `Hermes Agent 调用超时（${timeoutMs}ms）`;
+      status = 'timeout';
     } else if (error?.code === 'ENOENT') {
       errorMsg = 'hermes 命令未找到，请检查 Hermes Agent 是否已安装并在 PATH 中';
     } else if (error?.stderr) {
@@ -160,6 +220,16 @@ async function callHermesAgentV2(options: HermesAgentOptions): Promise<HermesAge
     } else if (error?.message) {
       errorMsg = error.message;
     }
+    void recordAICall({
+      meta,
+      systemPrompt,
+      userPrompt,
+      model,
+      durationMs,
+      status,
+      responseText: null,
+      errorMsg,
+    });
     return { success: false, content: null, error: errorMsg };
   }
 }
@@ -167,9 +237,10 @@ async function callHermesAgentV2(options: HermesAgentOptions): Promise<HermesAge
 async function callHermesAgent(
   systemPrompt: string,
   userPrompt: string,
-  model?: string
+  model?: string,
+  meta?: AICallMeta
 ): Promise<string | null> {
-  const result = await callHermesAgentV2({ systemPrompt, userPrompt, model });
+  const result = await callHermesAgentV2({ systemPrompt, userPrompt, model, meta });
   if (!result.success) {
     console.error('[HermesAgent] 调用失败:', result.error);
     return null;
@@ -178,8 +249,12 @@ async function callHermesAgent(
 }
 
 // AI 调用函数
-async function callAI(systemPrompt: string, userPrompt: string): Promise<string | null> {
-  return callHermesAgent(systemPrompt, userPrompt);
+async function callAI(
+  systemPrompt: string,
+  userPrompt: string,
+  meta?: AICallMeta
+): Promise<string | null> {
+  return callHermesAgent(systemPrompt, userPrompt, undefined, meta);
 }
 
 // AI 自动分类打卡内容
@@ -275,7 +350,7 @@ function formatClassificationLabel(result: ClassificationResult): string {
   return result.subcategory ? `${result.category}/${result.subcategory}` : result.category;
 }
 
-async function classifyCheckin(content: string): Promise<ClassificationResult> {
+async function classifyCheckin(content: string, meta?: AICallMeta): Promise<ClassificationResult> {
   // 快速关键词匹配（常见模式）
   const contentLower = content.toLowerCase();
 
@@ -382,7 +457,11 @@ async function classifyCheckin(content: string): Promise<ClassificationResult> {
   const userPrompt = `请分类以下打卡内容：\n${content}`;
 
   try {
-    const aiResponse = await callAI(systemPrompt, userPrompt);
+    const aiResponse = await callAI(systemPrompt, userPrompt, {
+      scenario: 'classify',
+      callerQQ: meta?.callerQQ,
+      groupQQ: meta?.groupQQ,
+    });
     if (aiResponse) {
       const result = JSON.parse(aiResponse.trim());
       return result;
@@ -477,7 +556,8 @@ async function handleClassificationCorrection(
 async function generateAIEncouragement(
   userId: number,
   user: { nickname: string; aiStyle: string; streakDays: number; dailyGoal: number | null },
-  checkinInfo: { duration: number; content: string; todayMinutes: number; isGoalAchieved: boolean }
+  checkinInfo: { duration: number; content: string; todayMinutes: number; isGoalAchieved: boolean },
+  meta?: { callerQQ?: string; groupQQ?: string }
 ): Promise<string> {
   try {
     const style = getAIStyle(user.aiStyle);
@@ -504,7 +584,11 @@ ${recentCheckinsText}
 - 长度 30-60 字，自然口语
 - 只输出一句话本身`;
 
-    const aiResponse = await callAI(style.systemPrompt, userPrompt);
+    const aiResponse = await callAI(style.systemPrompt, userPrompt, {
+      scenario: 'checkin_reply',
+      callerQQ: meta?.callerQQ,
+      groupQQ: meta?.groupQQ,
+    });
     if (!aiResponse || aiResponse.trim().length < 3) {
       return getRandomEncouragement();
     }
@@ -595,7 +679,12 @@ async function getUserAnalyticsData(userId: number) {
 }
 
 // 生成AI分析
-async function generateAIAnalysis(userId: number, nickname: string, aiStyle: string): Promise<string | null> {
+async function generateAIAnalysis(
+  userId: number,
+  nickname: string,
+  aiStyle: string,
+  meta?: { callerQQ?: string; groupQQ?: string }
+): Promise<string | null> {
   const data = await getUserAnalyticsData(userId);
 
   // 如果数据太少，不生成分析
@@ -622,7 +711,11 @@ async function generateAIAnalysis(userId: number, nickname: string, aiStyle: str
 
 请用你的风格给出个性化分析和建议。`;
 
-  return await callAI(systemPrompt, userPrompt);
+  return await callAI(systemPrompt, userPrompt, {
+    scenario: 'user_analysis',
+    callerQQ: meta?.callerQQ,
+    groupQQ: meta?.groupQQ,
+  });
 }
 
 // 超级管理员QQ号（从环境变量读取，不可被删除）
@@ -1063,7 +1156,11 @@ async function handleCheckin(
     // 同步分类（打卡时立即分类）
     let classification = { category: '', subcategory: '' };
     try {
-      classification = await classifyCheckin(content);
+      classification = await classifyCheckin(content, {
+        scenario: 'classify',
+        callerQQ: targetUserId.toString(),
+        groupQQ: groupId,
+      });
       const testPrefix = testMode ? '[测试] ' : '';
       console.log(`${testPrefix}✅ 打卡分类: ${content} → ${classification.category}${classification.subcategory ? '/' + classification.subcategory : ''}`);
     } catch (error) {
@@ -1307,6 +1404,10 @@ async function handleCheckin(
             content,
             todayMinutes,
             isGoalAchieved
+          },
+          {
+            callerQQ: targetUserId.toString(),
+            groupQQ: groupId,
           }
         );
         replyMsg += `\n💬 ${encouragement}`;
@@ -1491,7 +1592,10 @@ async function handleCheckinStats(
     }
 
     // 生成 AI 分析
-    const aiAnalysis = await generateAIAnalysis(user.id, user.nickname, user.aiStyle);
+    const aiAnalysis = await generateAIAnalysis(user.id, user.nickname, user.aiStyle, {
+      callerQQ: userId.toString(),
+      groupQQ: event.group_id?.toString(),
+    });
     if (aiAnalysis) {
       message += `\n🤖 AI 小结:\n${aiAnalysis}`;
     }
@@ -2004,7 +2108,10 @@ async function handleWeeklyReport(
     }
 
     // AI 总结
-    const aiSummary = await generateWeeklyAISummary(user.id, user.nickname, data, user.aiStyle);
+    const aiSummary = await generateWeeklyAISummary(user.id, user.nickname, data, user.aiStyle, {
+      callerQQ: userId.toString(),
+      groupQQ: event.group_id?.toString(),
+    });
     if (aiSummary) {
       message += `\n🤖 AI 总结:\n${aiSummary}`;
     }
@@ -2022,7 +2129,8 @@ async function generateWeeklyAISummary(
   userId: number,
   nickname: string,
   data: Awaited<ReturnType<typeof getUserAnalyticsData>>,
-  aiStyle: string
+  aiStyle: string,
+  meta?: { callerQQ?: string; groupQQ?: string }
 ): Promise<string | null> {
   if (data.weekCount < 1) {
     return null;
@@ -2052,7 +2160,11 @@ async function generateWeeklyAISummary(
 
 请用你的风格生成周报总结和下周建议。`;
 
-  return await callAI(systemPrompt, userPrompt);
+  return await callAI(systemPrompt, userPrompt, {
+    scenario: 'user_weekly_report',
+    callerQQ: meta?.callerQQ,
+    groupQQ: meta?.groupQQ,
+  });
 }
 
 // 设置每日目标
@@ -2759,7 +2871,11 @@ ${formatRecentCheckins(ctx.recentCheckins)}
 - 不要包含 @ 标签（系统会自动添加）
 - 只输出消息内容本身，不要解释、不要前缀`;
 
-    const result = await callHermesAgent(style.systemPrompt, userPrompt);
+    const result = await callHermesAgent(style.systemPrompt, userPrompt, undefined, {
+      scenario: 'reminder',
+      callerQQ: qq,
+      groupQQ: REMINDER_GROUP_ID || undefined,
+    });
     if (!result || result.trim().length < 5) return fallback;
     return ensureAtTag(result.trim(), qq);
   } catch (err) {
@@ -2794,7 +2910,11 @@ ${formatRecentCheckins(ctx.recentCheckins)}
 - 不要包含 @ 标签（系统会自动添加）
 - 只输出消息内容本身`;
 
-    const result = await callHermesAgent(style.systemPrompt, userPrompt);
+    const result = await callHermesAgent(style.systemPrompt, userPrompt, undefined, {
+      scenario: 'streak_warning',
+      callerQQ: target.qqNumber,
+      groupQQ: REMINDER_GROUP_ID || undefined,
+    });
     if (!result || result.trim().length < 5) return fallback;
     return ensureAtTag(result.trim(), target.qqNumber);
   } catch (err) {
@@ -2830,7 +2950,11 @@ ${formatRecentCheckins(ctx.recentCheckins)}
 - 不要包含 @ 标签（系统会自动添加）
 - 只输出消息内容本身`;
 
-    const result = await callHermesAgent(style.systemPrompt, userPrompt);
+    const result = await callHermesAgent(style.systemPrompt, userPrompt, undefined, {
+      scenario: 'streak_broken',
+      callerQQ: target.qqNumber,
+      groupQQ: REMINDER_GROUP_ID || undefined,
+    });
     if (!result || result.trim().length < 5) return fallback;
     return ensureAtTag(result.trim(), target.qqNumber);
   } catch (err) {
@@ -2963,7 +3087,10 @@ ${[...categoryStats.entries()].sort((a, b) => b[1] - a[1]).map(([cat, m]) => `- 
 - 语言自然连贯，不要列点
 - 只输出总结正文`;
 
-    const aiSummary = await callHermesAgent(systemPrompt, userPrompt);
+    const aiSummary = await callHermesAgent(systemPrompt, userPrompt, undefined, {
+      scenario: 'group_weekly_report',
+      groupQQ: REMINDER_GROUP_ID || undefined,
+    });
     if (aiSummary && aiSummary.trim().length > 5) {
       message += `\n🤖 本周观察:\n${aiSummary.trim()}`;
     }

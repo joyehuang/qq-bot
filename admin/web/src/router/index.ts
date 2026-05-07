@@ -40,6 +40,12 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/users/Detail.vue'),
         meta: { title: '用户详情', hidden: true },
       },
+      {
+        path: 'ai-calls',
+        name: 'AICalls',
+        component: () => import('@/views/ai-calls/Index.vue'),
+        meta: { title: 'AI 调用记录', icon: 'MagicStick' },
+      },
     ],
   },
   {
