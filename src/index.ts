@@ -30,6 +30,7 @@ const ACHIEVEMENTS: Record<string, { name: string; description: string; icon: st
   'total_10h': { name: '初具规模', description: '累计打卡10小时', icon: '🌟' },
   'total_100h': { name: '百炼成钢', description: '累计打卡100小时', icon: '💎' },
   'debt_free': { name: '信用良好', description: '还清所有贷款负债', icon: '✨' },
+  'laolai': { name: '老赖', description: '贷款打卡100小时以上', icon: '💰' },
   'early_bird': { name: '早起鸟儿', description: '早上6-8点打卡', icon: '🌅' },
   'night_owl': { name: '夜猫子', description: '晚上22-24点打卡', icon: '🌙' }
 };
