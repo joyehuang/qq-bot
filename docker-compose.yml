@@ -3,12 +3,19 @@ services:
     image: mlikiowa/napcat-docker:latest
     container_name: napcat
     restart: unless-stopped
+    # -q <QQ号>：容器拉起后用本地缓存的会话/cookie 做"快速登录"，
+    # 跳过扫码。前提是 /app/.config/QQ 目录被持久化（见下方 volumes）。
+    command: ["bash", "entrypoint.sh", "-q", "3782675465"]
     ports:
       - "6099:6099"   # HTTP API
       - "6100:6100"   # WebSocket
     volumes:
       - ./napcat/config:/app/napcat/config
       - ./napcat/data:/app/napcat/data
+      # NTQQ 真正的会话/cookie/账号缓存目录在 /app/.config/QQ。
+      # 不挂出来的话，每次容器重建（image 更新、compose down/up）都会丢登录态，
+      # 必须重新扫码。挂到宿主后即便容器重建也能 -q 自动登录。
+      - ./napcat/qq-data:/app/.config/QQ
     environment:
       - NAPCAT_GID=0
       - NAPCAT_UID=0

@@ -23,6 +23,7 @@ logs/
 # NapCat runtime state（含 QQ 登录信息，由容器自动生成）
 napcat/config/
 napcat/data/
+napcat/qq-data/
 
 # Claude
 .claude
